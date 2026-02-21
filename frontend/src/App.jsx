@@ -203,7 +203,7 @@ function EventPage() {
       <BlueSwipe />
       {/* Header */}
       <header className="sticky top-0 z-50 bg-blue-700">
-        <nav className="flex h-14 items-center justify-between px-4 md:px-6">
+        <nav className="flex h-20 items-center justify-between px-4 md:px-6">
           <a href="/" className="flex items-center gap-2 shrink-0">
             <span className="flex h-8 w-8 items-center justify-center bg-white/20 font-bold text-white text-sm">PA</span>
             <span className="hidden font-semibold tracking-tight text-white sm:inline">Polymarket Arb</span>
@@ -372,6 +372,308 @@ function EventPage() {
   )
 }
 
+function Spinner() {
+  return (
+    <svg className="step-spinner h-5 w-5 text-blue-600" viewBox="0 0 24 24" fill="none">
+      <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeDasharray="31.4 31.4" />
+    </svg>
+  )
+}
+
+function SemanticResultsPage() {
+  const location = useLocation()
+  const navigate = useNavigate()
+  const prompt = location.state?.prompt ?? null
+
+  const [matchedTags, setMatchedTags] = useState(null)
+  const [tagBreakdowns, setTagBreakdowns] = useState({})
+  const [activeTagIdx, setActiveTagIdx] = useState(-1)
+  const [wordMarkets, setWordMarkets] = useState(null)
+  const [pipelinePhase, setPipelinePhase] = useState('idle')
+  const [expandedTags, setExpandedTags] = useState({})
+  const [error, setError] = useState(null)
+  const [timings, setTimings] = useState({})
+
+  useEffect(() => {
+    if (!prompt) return
+    let cancelled = false
+
+    async function runPipeline() {
+      setPipelinePhase('matching_tags')
+      const t0 = performance.now()
+      try {
+        const res = await fetch('/api/search/semantic/match-tags', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ prompt, num_tags: 5 }),
+        })
+        if (cancelled) return
+        const data = await res.json()
+        if (!res.ok) throw new Error(data?.detail ?? 'Tag matching failed')
+        setMatchedTags(data.matched_tags ?? [])
+        setTimings((t) => ({ ...t, tags: Math.round(performance.now() - t0) }))
+      } catch (e) {
+        if (!cancelled) setError(e.message)
+        return
+      }
+
+      if (cancelled) return
+      setPipelinePhase('fetching_events')
+
+      const tagsSnapshot = await new Promise((resolve) => {
+        setMatchedTags((prev) => { resolve(prev); return prev })
+      })
+      for (let i = 0; i < tagsSnapshot.length; i++) {
+        if (cancelled) return
+        const tag = tagsSnapshot[i]
+        setActiveTagIdx(i)
+        const t1 = performance.now()
+        try {
+          const res = await fetch('/api/search/semantic/tag-events', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ tag_slug: tag.slug, tag_label: tag.label, tag_score: tag.score, events_per_tag: 30 }),
+          })
+          if (cancelled) return
+          const data = await res.json()
+          const elapsed = Math.round(performance.now() - t1)
+          if (res.ok) {
+            setTagBreakdowns((prev) => ({ ...prev, [tag.slug]: { ...data, _elapsed: elapsed } }))
+            setExpandedTags((prev) => ({ ...prev, [tag.slug]: true }))
+          } else {
+            setTagBreakdowns((prev) => ({ ...prev, [tag.slug]: { error: data?.detail ?? 'Failed', _elapsed: elapsed } }))
+          }
+        } catch (e) {
+          if (!cancelled) setTagBreakdowns((prev) => ({ ...prev, [tag.slug]: { error: e.message } }))
+        }
+      }
+
+      if (cancelled) return
+      setActiveTagIdx(-1)
+      setPipelinePhase('word_search')
+
+      const t2 = performance.now()
+      try {
+        const res = await fetch('/api/search/semantic/word-search', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ prompt }),
+        })
+        if (cancelled) return
+        const data = await res.json()
+        setWordMarkets(res.ok ? (data.markets ?? []) : [])
+        setTimings((t) => ({ ...t, wordSearch: Math.round(performance.now() - t2) }))
+      } catch {
+        if (!cancelled) setWordMarkets([])
+        setTimings((t) => ({ ...t, wordSearch: Math.round(performance.now() - t2) }))
+      }
+
+      if (!cancelled) setPipelinePhase('complete')
+    }
+
+    runPipeline()
+    return () => { cancelled = true }
+  }, [prompt])
+
+  if (!prompt) {
+    return (
+      <div className="min-h-screen bg-blue-50 flex flex-col items-center justify-center gap-4 px-4">
+        <p className="text-lg text-black/60">No search prompt.</p>
+        <button type="button" onClick={() => navigate('/')} className="text-blue-700 text-base underline underline-offset-2">Back to search</button>
+      </div>
+    )
+  }
+
+  const step2Done = ['word_search', 'complete'].includes(pipelinePhase)
+  const totalEvents = Object.values(tagBreakdowns).reduce((sum, tb) => sum + (tb.events_count ?? 0), 0)
+
+  function toggleTag(slug) {
+    setExpandedTags((prev) => ({ ...prev, [slug]: !prev[slug] }))
+  }
+
+  return (
+    <div className="min-h-screen bg-blue-50 text-black flex flex-col">
+      <BlueSwipe />
+      <header className="sticky top-0 z-50 bg-blue-700">
+        <nav className="flex h-20 items-center justify-between px-4 md:px-6">
+          <a href="/" className="flex items-center gap-2 shrink-0">
+            <span className="flex h-8 w-8 items-center justify-center bg-white/20 font-bold text-white text-sm">PA</span>
+            <span className="hidden font-semibold tracking-tight text-white sm:inline">Polymarket Arb</span>
+          </a>
+          <button type="button" onClick={() => navigate('/')} className="text-base text-white/80 hover:text-white underline underline-offset-2">
+            New search
+          </button>
+        </nav>
+      </header>
+
+      <div className="mx-auto w-full max-w-4xl px-6 md:px-10 pt-14 pb-24">
+        <h1 className="text-3xl font-medium tracking-tight text-black/80 mb-2">"{prompt}"</h1>
+        <div className="h-px bg-black/10 mb-12" />
+
+        {error && (
+          <p className="step-appear text-base text-red-600 mb-8">{error}</p>
+        )}
+
+        {/* Pipeline spine */}
+        <div className="relative pl-8">
+          <div className="absolute left-0 top-1 bottom-0 w-px bg-black/10" />
+
+          {/* STEP 1 — Match tags */}
+          <div className="relative mb-12">
+            <div className="absolute -left-8 top-1 w-4 h-4 rounded-full border-2 border-blue-50 transition-colors duration-300"
+              style={{ backgroundColor: matchedTags ? '#16a34a' : pipelinePhase === 'matching_tags' ? '#2563eb' : '#d1d5db' }} />
+
+            <div className="flex items-center gap-3 mb-2">
+              <span className="text-sm font-medium text-black/40 uppercase tracking-wider">Matching tags</span>
+              {pipelinePhase === 'matching_tags' && <Spinner />}
+              {timings.tags != null && <span className="text-sm text-black/20 font-mono">{timings.tags}ms</span>}
+            </div>
+
+            {matchedTags && (
+              <div className="step-appear mt-4">
+                <p className="text-lg text-black/50 mb-4">
+                  Found <span className="font-semibold text-black">{matchedTags.length}</span> tags by embedding similarity
+                </p>
+                {matchedTags.map((tag, i) => (
+                  <div key={tag.slug} className="step-appear flex items-center gap-4 py-2.5" style={{ animationDelay: `${i * 60}ms` }}>
+                    <span className="text-sm font-mono text-black/20 w-4 text-right shrink-0">{i + 1}</span>
+                    <span className="text-base text-black/80 flex-1 truncate">{tag.label}</span>
+                    <div className="shrink-0 flex items-center gap-3">
+                      <div className="w-24 h-1.5 bg-black/5 overflow-hidden rounded-full">
+                        <div className="h-full bg-blue-600 rounded-full score-bar-fill" style={{ '--target-width': `${Math.max(tag.score * 100, 3)}%` }} />
+                      </div>
+                      <span className="text-sm font-mono text-blue-600 w-14 text-right">{(tag.score * 100).toFixed(1)}%</span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* STEP 2 — Events per tag */}
+          {matchedTags && (
+            <div className="relative mb-12 step-appear">
+              <div className="absolute -left-8 top-1 w-4 h-4 rounded-full border-2 border-blue-50 transition-colors duration-300"
+                style={{ backgroundColor: step2Done ? '#16a34a' : pipelinePhase === 'fetching_events' ? '#2563eb' : '#d1d5db' }} />
+
+              <div className="flex items-center gap-3 mb-5">
+                <span className="text-sm font-medium text-black/40 uppercase tracking-wider">Fetching events per tag</span>
+                {pipelinePhase === 'fetching_events' && <Spinner />}
+              </div>
+
+              {matchedTags.map((tag, i) => {
+                const bd = tagBreakdowns[tag.slug]
+                const isLoading = pipelinePhase === 'fetching_events' && activeTagIdx === i && !bd
+                const isExpanded = expandedTags[tag.slug]
+                const isVisible = bd || isLoading || (pipelinePhase === 'fetching_events' && activeTagIdx >= i)
+
+                if (!isVisible) return null
+
+                return (
+                  <div key={tag.slug} className="step-appear mb-1">
+                    <button
+                      type="button"
+                      onClick={() => bd && toggleTag(tag.slug)}
+                      className="w-full flex items-center gap-3 py-3 text-left group"
+                    >
+                      {isLoading ? (
+                        <Spinner />
+                      ) : bd ? (
+                        <svg className={`h-4 w-4 shrink-0 text-black/25 transition-transform duration-200 ${isExpanded ? 'rotate-90' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M9 5l7 7-7 7" />
+                        </svg>
+                      ) : (
+                        <div className="h-4 w-4 shrink-0" />
+                      )}
+                      <span className="text-base text-black/70 group-hover:text-black transition-colors truncate">{tag.label}</span>
+                      <span className="text-sm font-mono text-black/20 ml-auto shrink-0">
+                        {bd && !bd.error ? `${bd.events_count} events` : bd?.error ? 'failed' : ''}
+                      </span>
+                      {bd?._elapsed != null && (
+                        <span className="text-sm font-mono text-black/15 shrink-0">{bd._elapsed}ms</span>
+                      )}
+                    </button>
+
+                    {isExpanded && bd && !bd.error && (
+                      <div className="step-appear pl-7 pb-4">
+                        <div className="flex gap-8 text-sm text-black/40 mb-3">
+                          <span><span className="font-semibold text-black/70">{bd.events_count}</span> events</span>
+                          <span><span className="font-semibold text-black/70">{bd.total_markets}</span> markets</span>
+                          <span><span className="font-semibold text-black/70">{bd.avg_markets_per_event?.toFixed(1) ?? '—'}</span> avg/event</span>
+                        </div>
+                        {bd.event_titles?.length > 0 && (
+                          <div className="border-l border-black/8 pl-4">
+                            {bd.event_titles.map((title, idx) => (
+                              <p key={idx} className="text-sm text-black/50 py-1 leading-relaxed">
+                                <span className="font-mono text-black/20 mr-2">{idx + 1}.</span>{title}
+                              </p>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    )}
+
+                    {i < matchedTags.length - 1 && bd && <div className="h-px bg-black/5 ml-7" />}
+                  </div>
+                )
+              })}
+            </div>
+          )}
+
+          {/* STEP 3 — Word search */}
+          {(pipelinePhase === 'word_search' || pipelinePhase === 'complete') && (
+            <div className="relative mb-12 step-appear">
+              <div className="absolute -left-8 top-1 w-4 h-4 rounded-full border-2 border-blue-50 transition-colors duration-300"
+                style={{ backgroundColor: pipelinePhase === 'complete' ? '#16a34a' : '#2563eb' }} />
+
+              <div className="flex items-center gap-3 mb-2">
+                <span className="text-sm font-medium text-black/40 uppercase tracking-wider">Word search</span>
+                {pipelinePhase === 'word_search' && <Spinner />}
+                {timings.wordSearch != null && <span className="text-sm text-black/20 font-mono">{timings.wordSearch}ms</span>}
+              </div>
+
+              {wordMarkets && (
+                <div className="step-appear mt-4">
+                  <p className="text-lg text-black/50 mb-4">
+                    <span className="font-semibold text-black">{wordMarkets.length}</span> text match{wordMarkets.length !== 1 ? 'es' : ''}
+                  </p>
+                  {wordMarkets.map((wm, i) => (
+                    <div key={wm.id} className="step-appear py-3" style={{ animationDelay: `${i * 50}ms` }}>
+                      <div className="flex items-start justify-between gap-6">
+                        <p className="text-base text-black/70 leading-relaxed">{wm.question}</p>
+                        {wm.score != null && (
+                          <span className="shrink-0 text-sm font-mono text-blue-600">{(wm.score * 100).toFixed(1)}%</span>
+                        )}
+                      </div>
+                      {i < wordMarkets.length - 1 && <div className="h-px bg-black/5 mt-3" />}
+                    </div>
+                  ))}
+                  {wordMarkets.length === 0 && (
+                    <p className="text-base text-black/30">No keyword matches.</p>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* DONE */}
+          {pipelinePhase === 'complete' && (
+            <div className="relative step-appear">
+              <div className="absolute -left-8 top-1 w-4 h-4 rounded-full bg-green-600 border-2 border-blue-50" />
+              <div className="h-px bg-black/10 mb-5" />
+              <p className="text-sm text-black/30">
+                Done — <span className="text-black/50">{matchedTags?.length ?? 0} tags</span>
+                {' · '}<span className="text-black/50">{totalEvents} events</span>
+                {' · '}<span className="text-black/50">{wordMarkets?.length ?? 0} text matches</span>
+              </p>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}
+
 function HomePage() {
   const [searchValue, setSearchValue] = useState('')
   const [loading, setLoading] = useState(false)
@@ -389,52 +691,15 @@ function HomePage() {
     if (!input) return
     setError(null)
     setLoading(true)
+
+    // For free-text prompts, navigate immediately — the results page runs the pipeline
+    if (!isPolymarketUrl(input)) {
+      setLoading(false)
+      navigate('/search', { state: { prompt: input } })
+      return
+    }
+
     try {
-      // Semantic search: match prompt to top 3 tags, fetch 20 events per tag (always run for logging)
-      const semanticRes = await fetch('/api/search/semantic', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ prompt: input, num_tags: 5, events_per_tag: 30 }),
-      })
-      const semanticData = await semanticRes.json()
-      if (semanticRes.ok) {
-        const tags = semanticData.matched_tags ?? []
-        const events = semanticData.events ?? []
-        const total = semanticData.total_events ?? events.length
-        if (semanticData.api_version === 'tag-based' && Array.isArray(semanticData.matched_tags)) {
-          console.log('Matched tags:', tags.length ? tags.map((t) => `${t.label} (${t.score})`).join(', ') : 'none')
-          console.log(`${total} events with best market (MIS) per event:`, events)
-          events.forEach((ev, i) => {
-            const title = ev.event_title ?? ev.title ?? '(no title)'
-            const m = ev.best_market
-            if (m) console.log(`  ${i + 1}. [${title}] → market id=${m.id} question="${(m.question || '').slice(0, 60)}..."`)
-            else console.log(`  ${i + 1}. [${title}] → no market`)
-          })
-          const wordSearch = semanticData.word_search_markets ?? []
-          if (wordSearch.length) {
-            console.log('Word search (top 3 markets by wording):', wordSearch)
-            wordSearch.forEach((wm, i) => console.log(`  ${i + 1}. id=${wm.id} question="${(wm.question || '').slice(0, 60)}..."`))
-          }
-        } else {
-          console.warn(
-            'Backend is not using tag-based search. Restart from backend folder: uvicorn app.main:app --reload --host 0.0.0.0 --port 8000',
-            'Response keys:',
-            Object.keys(semanticData),
-            'Full response:',
-            semanticData
-          )
-        }
-      } else {
-        console.warn('Semantic search failed:', semanticData?.detail ?? semanticRes.status, semanticData)
-      }
-
-      // Only call Polymarket URL endpoint when input looks like a Polymarket URL
-      if (!isPolymarketUrl(input)) {
-        setLoading(false)
-        setError('Enter a Polymarket URL (e.g. https://polymarket.com/event/...) to open an event. Semantic results are in the console.')
-        return
-      }
-
       const res = await fetch(`/api/polymarket?url=${encodeURIComponent(input)}`)
       const data = await res.json()
       if (!res.ok) {
@@ -458,7 +723,7 @@ function HomePage() {
   return (
     <div className="min-h-screen bg-blue-50 text-black flex flex-col overflow-x-hidden">
       <header className="sticky top-0 z-50 bg-blue-700">
-        <nav className="mx-auto flex h-14 max-w-7xl items-center justify-between gap-6 px-2 md:px-3">
+        <nav className="mx-auto flex h-20 max-w-7xl items-center justify-between gap-6 px-2 md:px-3">
           <a href="/" className="flex items-center gap-2 shrink-0">
             <span className="flex h-8 w-8 items-center justify-center bg-white/20 font-bold text-white text-sm">PA</span>
             <span className="hidden font-semibold tracking-tight text-white sm:inline">Polymarket Arb</span>
@@ -481,7 +746,7 @@ function HomePage() {
               <div className="flex w-full border-0 bg-white pl-3 pr-4 md:pl-4">
                 <input
                   type="search"
-                  placeholder="Paste Polymarket URL (e.g. https://polymarket.com/event/...)"
+                  placeholder="Search anything or paste a Polymarket URL…"
                   className="search-input w-full border-0 bg-transparent py-4 pr-4 pl-0 text-black placeholder-gray-500 outline-none"
                   value={searchValue}
                   onChange={(e) => setSearchValue(e.target.value)}
@@ -576,6 +841,7 @@ function App() {
   return (
     <Routes>
       <Route path="/" element={<HomePage />} />
+      <Route path="/search" element={<SemanticResultsPage />} />
       <Route path="/event/:slug" element={<EventPage />} />
     </Routes>
   )

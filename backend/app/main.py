@@ -95,12 +95,26 @@ class WordSearchMarket(BaseModel):
 
     id: str
     question: str
+    score: float | None = None
+
+
+class TagBreakdown(BaseModel):
+    """Per-tag statistics so the frontend can show the pipeline step-by-step."""
+
+    tag_slug: str
+    tag_label: str
+    score: float
+    events_count: int = 0
+    total_markets: int = 0
+    avg_markets_per_event: float = 0.0
+    event_titles: list[str] = []
 
 
 class SemanticSearchResponse(BaseModel):
     api_version: str = "tag-based"
     prompt: str
     matched_tags: list[MatchedTag]
+    tag_breakdown: list[TagBreakdown] = []
     events: list[EventWithBestMarket]
     total_events: int
     word_search_markets: list[WordSearchMarket] = []
@@ -188,8 +202,12 @@ async def lifespan(app: FastAPI):
     _model = SentenceTransformer(EMBEDDING_MODEL_NAME)
     logger.info("Model loaded.")
 
+    # Warm up the model with a dummy encode so the first real request is fast
+    loop = asyncio.get_running_loop()
+    await loop.run_in_executor(None, _model.encode, "warmup")
+    logger.info("Model warmed up.")
+
     await _refresh_updates()
-    # Populate tag cache once before accepting requests so semantic search works immediately
     await _refresh_tag_cache()
     updates_task = asyncio.create_task(_background_updater(interval_seconds=10.0))
     cache_task = asyncio.create_task(_tag_cache_updater(interval_seconds=1800.0))
@@ -230,6 +248,17 @@ async def health() -> dict[str, str]:
 async def api_version() -> dict[str, str]:
     """Return API version so frontend can verify tag-based semantic search is loaded."""
     return {"semantic_search": "tag-based", "api_version": "tag-based"}
+
+
+@app.get("/api/search/tags")
+async def get_cached_tags() -> dict[str, Any]:
+    """Return the cached tag list instantly (no embedding computation)."""
+    tags = _tag_cache.get("tags", [])
+    return {
+        "tags": [{"label": t["label"], "slug": t["slug"]} for t in tags],
+        "count": len(tags),
+        "last_updated": _tag_cache.get("last_updated"),
+    }
 
 
 @app.get("/api/updates")
@@ -441,6 +470,99 @@ def _market_importance_score(
     return volatility + volume_score + recency_ratio
 
 
+class MatchTagsRequest(BaseModel):
+    prompt: str = Field(..., min_length=1)
+    num_tags: int = Field(5, ge=1, le=15)
+
+
+class MatchTagsResponse(BaseModel):
+    matched_tags: list[MatchedTag]
+
+
+@app.post("/api/search/semantic/match-tags", response_model=MatchTagsResponse)
+async def match_tags(body: MatchTagsRequest) -> MatchTagsResponse:
+    """Step 1: embed the prompt and match it against cached Polymarket tags."""
+    if _model is None:
+        raise HTTPException(status_code=503, detail="Embedding model not loaded yet")
+    tag_embeddings: np.ndarray | None = _tag_cache["embeddings"]
+    if tag_embeddings is None or len(_tag_cache["tags"]) == 0:
+        raise HTTPException(status_code=503, detail="Tag cache empty — try again shortly")
+
+    loop = asyncio.get_running_loop()
+    prompt_emb: np.ndarray = await loop.run_in_executor(None, _model.encode, body.prompt)
+    scores = _cosine_similarity(prompt_emb, tag_embeddings)
+    top_k = min(body.num_tags, len(scores))
+    top_indices = np.argsort(scores)[::-1][:top_k]
+
+    tags = []
+    for idx in top_indices:
+        t = _tag_cache["tags"][int(idx)]
+        tags.append(MatchedTag(label=t["label"], slug=t["slug"], score=round(float(scores[idx]), 5)))
+    return MatchTagsResponse(matched_tags=tags)
+
+
+class TagEventsRequest(BaseModel):
+    tag_slug: str = Field(..., min_length=1)
+    tag_label: str = ""
+    tag_score: float = 0.0
+    events_per_tag: int = Field(30, ge=1, le=100)
+
+
+@app.post("/api/search/semantic/tag-events", response_model=TagBreakdown)
+async def tag_events(body: TagEventsRequest) -> TagBreakdown:
+    """Step 2: fetch live events for a single tag and return breakdown stats."""
+    async with httpx.AsyncClient(timeout=20.0) as client:
+        try:
+            r = await client.get(
+                f"{GAMMA_API_BASE}/events",
+                params={"tag_slug": body.tag_slug, "limit": body.events_per_tag, "active": "true", "closed": "false"},
+            )
+            r.raise_for_status()
+            data = r.json()
+            event_list = data if isinstance(data, list) else [data] if data else []
+        except Exception:
+            logger.warning("Failed to fetch events for tag '%s'", body.tag_slug)
+            event_list = []
+
+    total_markets = sum(len(e.get("markets") or []) for e in event_list)
+    ev_count = len(event_list)
+    return TagBreakdown(
+        tag_slug=body.tag_slug,
+        tag_label=body.tag_label,
+        score=body.tag_score,
+        events_count=ev_count,
+        total_markets=total_markets,
+        avg_markets_per_event=round(total_markets / ev_count, 2) if ev_count else 0.0,
+        event_titles=[(e.get("title") or e.get("question") or "(untitled)")[:120] for e in event_list],
+    )
+
+
+class WordSearchRequest(BaseModel):
+    prompt: str = Field(..., min_length=1)
+
+
+class WordSearchResponse(BaseModel):
+    markets: list[WordSearchMarket]
+
+
+@app.post("/api/search/semantic/word-search", response_model=WordSearchResponse)
+async def word_search(body: WordSearchRequest) -> WordSearchResponse:
+    """Step 3: Polymarket full-text word search with embedding similarity scores."""
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        markets = await _word_search_markets(client, body.prompt, top_n=5)
+
+    if markets and _model is not None:
+        loop = asyncio.get_running_loop()
+        prompt_emb = await loop.run_in_executor(None, _model.encode, body.prompt)
+        questions = [m.question for m in markets]
+        q_emb = await loop.run_in_executor(None, _model.encode, questions)
+        q_scores = _cosine_similarity(prompt_emb, np.asarray(q_emb, dtype=np.float32))
+        for i, m in enumerate(markets):
+            m.score = round(float(q_scores[i]), 5)
+
+    return WordSearchResponse(markets=markets)
+
+
 @app.post("/api/search/semantic", response_model=SemanticSearchResponse)
 async def semantic_search(body: SemanticSearchRequest) -> SemanticSearchResponse:
     """
@@ -502,6 +624,25 @@ async def semantic_search(body: SemanticSearchRequest) -> SemanticSearchResponse
         results = await asyncio.gather(
             *[_fetch_events_for_tag(client, slug) for slug in tag_slugs]
         )
+
+    # Build per-tag breakdown before deduplication
+    tag_breakdown: list[TagBreakdown] = []
+    for tag_idx, event_list in enumerate(results):
+        tag = matched_tags[tag_idx]
+        total_markets = sum(len(e.get("markets") or []) for e in event_list)
+        ev_count = len(event_list)
+        tag_breakdown.append(TagBreakdown(
+            tag_slug=tag.slug,
+            tag_label=tag.label,
+            score=tag.score,
+            events_count=ev_count,
+            total_markets=total_markets,
+            avg_markets_per_event=round(total_markets / ev_count, 2) if ev_count else 0.0,
+            event_titles=[
+                (e.get("title") or e.get("question") or "(untitled)")[:120]
+                for e in event_list
+            ],
+        ))
 
     # Deduplicate by event id; keep raw event dict + tag score for MIS and ordering
     seen_ids: set[str] = set()
@@ -602,10 +743,19 @@ async def semantic_search(body: SemanticSearchRequest) -> SemanticSearchResponse
             out_events_task, word_search_task
         )
 
+    # Compute embedding similarity for word-search results
+    if word_search_markets and _model is not None:
+        questions = [wm.question for wm in word_search_markets]
+        q_embeddings = await loop.run_in_executor(None, _model.encode, questions)
+        q_scores = _cosine_similarity(prompt_embedding, np.asarray(q_embeddings, dtype=np.float32))
+        for i, wm in enumerate(word_search_markets):
+            wm.score = round(float(q_scores[i]), 5)
+
     return SemanticSearchResponse(
         api_version="tag-based",
         prompt=body.prompt,
         matched_tags=matched_tags,
+        tag_breakdown=tag_breakdown,
         events=list(out_events),
         total_events=len(out_events),
         word_search_markets=word_search_markets,

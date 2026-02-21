@@ -29,6 +29,32 @@ html, body {
   pointer-events: none;
 }
 
+/* Steps appear with a fade + slide-up */
+@keyframes step-appear {
+  0% { opacity: 0; transform: translateY(12px); }
+  100% { opacity: 1; transform: translateY(0); }
+}
+.step-appear {
+  animation: step-appear 0.35s ease-out both;
+}
+
+/* Spinner rotation */
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+.step-spinner {
+  animation: spin 0.8s linear infinite;
+}
+
+/* Score bar fills from 0 to target width */
+@keyframes score-fill {
+  0% { width: 0; }
+  100% { width: var(--target-width); }
+}
+.score-bar-fill {
+  animation: score-fill 0.6s ease-out 0.15s both;
+}
+
 /* Remove default search clear (X) button */
 .search-input::-webkit-search-cancel-button {
   appearance: none;
