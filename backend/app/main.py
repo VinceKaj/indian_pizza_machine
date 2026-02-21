@@ -3,12 +3,17 @@ FastAPI backend with an auto-updating exposed endpoint.
 Data is refreshed in the background; GET /api/updates returns the latest snapshot.
 """
 import asyncio
+import sys
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI
+from create_basket import build_synthetic_basket
+
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
 
 # In-memory store updated by the background task
 _updates: dict[str, Any] = {
@@ -79,3 +84,41 @@ async def get_updates() -> dict[str, Any]:
     Poll this endpoint to get updated values.
     """
     return _updates.copy()
+
+
+class BasketRequest(BaseModel):
+    target_market_id: str
+    input_market_ids: list[str]
+    days: int = 7
+
+
+@app.post("/api/basket")
+async def create_basket(request: BasketRequest) -> dict[str, Any]:
+    """
+    Create a synthetic basket from a target market and input markets.
+    
+    Args:
+        target_market_id: Polymarket market ID for the target
+        input_market_ids: List of Polymarket market IDs for inputs
+        days: Number of days of historical data to use (default: 7)
+    
+    Returns:
+        {
+            "target_prices": [float, ...],
+            "synthetic_prices": [float, ...],
+            "weights": [{"title": str, "market_id": str, "weight": float}, ...],
+            "r_squared": float,
+            "timestamps": [str, ...],
+            "target_question": str
+        }
+    """
+    try:
+        result = build_synthetic_basket(
+            target_market_id=request.target_market_id,
+            input_market_ids=request.input_market_ids,
+            days=request.days,
+            verbose=False
+        )
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
