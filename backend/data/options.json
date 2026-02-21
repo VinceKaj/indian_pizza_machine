@@ -1,0 +1,338 @@
+[
+    {
+        "event_id": "36309",
+        "event_title": "Grok 5 released by...?",
+        "best_market": {
+            "id": "573830",
+            "question": "Grok 5 released by March 31, 2026?"
+        }
+    },
+    {
+        "event_id": "61056",
+        "event_title": "SpaceX Starship Flight Test 12",
+        "best_market": {
+            "id": "638650",
+            "question": "Will the chopsticks catch SpaceX Starship Flight Test 12 Superheavy booster?"
+        }
+    },
+    {
+        "event_id": "73114",
+        "event_title": "Will Elon register any party before 2027?",
+        "best_market": {
+            "id": "665354",
+            "question": "Will Elon register any party before 2027?"
+        }
+    },
+    {
+        "event_id": "73198",
+        "event_title": "Will Elon Musk announce Presidential run before 2027?",
+        "best_market": {
+            "id": "665482",
+            "question": "Will Elon Musk announce Presidential run before 2027?"
+        }
+    },
+    {
+        "event_id": "79049",
+        "event_title": "Musk out as Tesla CEO before 2027?",
+        "best_market": {
+            "id": "676802",
+            "question": "Musk out as Tesla CEO before 2027?"
+        }
+    },
+    {
+        "event_id": "79056",
+        "event_title": "SpaceX Starship fully reusable before 2027?",
+        "best_market": {
+            "id": "676812",
+            "question": "SpaceX Starship fully reusable before 2027?"
+        }
+    },
+    {
+        "event_id": "79061",
+        "event_title": "Will Tesla launch robotaxis in California by June 30?",
+        "best_market": {
+            "id": "676817",
+            "question": "Will Tesla launch robotaxis in California by June 30?"
+        }
+    },
+    {
+        "event_id": "79089",
+        "event_title": "Richest person on March 31?",
+        "best_market": {
+            "id": "676900",
+            "question": "Will Elon Musk be richest person on March 31?"
+        }
+    },
+    {
+        "event_id": "79090",
+        "event_title": "Richest person on December 31, 2026?",
+        "best_market": {
+            "id": "676937",
+            "question": "Will Elon Musk be richest person on December 31?"
+        }
+    },
+    {
+        "event_id": "80149",
+        "event_title": "Will xAI release a dLLM by June 30?",
+        "best_market": {
+            "id": "679894",
+            "question": "Will xAI release a dLLM by June 30?"
+        }
+    },
+    {
+        "event_id": "95130",
+        "event_title": "Will Elon Musk go on Joe Rogan before June 30?",
+        "best_market": {
+            "id": "788856",
+            "question": "Will Elon Musk go on Joe Rogan before June 30?"
+        }
+    },
+    {
+        "event_id": "96053",
+        "event_title": "Will Tesla open orders for the Robovan before 2027?",
+        "best_market": {
+            "id": "801932",
+            "question": "Will Tesla open orders for the Robovan before 2027?"
+        }
+    },
+    {
+        "event_id": "98133",
+        "event_title": "Elon Musk trillionaire before 2027?",
+        "best_market": {
+            "id": "836162",
+            "question": "Elon Musk trillionaire before 2027?"
+        }
+    },
+    {
+        "event_id": "98374",
+        "event_title": "SpaceX IPO Closing Market Cap",
+        "best_market": {
+            "id": "842092",
+            "question": "Will SpaceX's market cap be greater than $1T at market close on IPO day?"
+        }
+    },
+    {
+        "event_id": "101866",
+        "event_title": "Another Elon baby by June 30?",
+        "best_market": {
+            "id": "908000",
+            "question": "Another Elon baby by June 30?"
+        }
+    },
+    {
+        "event_id": "102007",
+        "event_title": "SpaceX IPO closing market cap above ___ ?",
+        "best_market": {
+            "id": "909466",
+            "question": "SpaceX IPO closing market cap above $1T?"
+        }
+    },
+    {
+        "event_id": "102763",
+        "event_title": "How many SpaceX Starship launches reach space in 2026?",
+        "best_market": {
+            "id": "916717",
+            "question": "Will 7-8 SpaceX Starship launches successfully reach Space in 2026?"
+        }
+    },
+    {
+        "event_id": "104392",
+        "event_title": "What will SpaceX's public ticker be?",
+        "best_market": {
+            "id": "929494",
+            "question": "Will SpaceX's public ticker be $SEX?"
+        }
+    },
+    {
+        "event_id": "117810",
+        "event_title": "SpaceX goes public through Bill Ackman \"SPAR\" company?",
+        "best_market": {
+            "id": "995773",
+            "question": "SpaceX goes public through Bill Ackman \"SPAR\" company?"
+        }
+    },
+    {
+        "event_id": "118083",
+        "event_title": "Nothing Ever Happens: Elon Edition",
+        "best_market": {
+            "id": "997090",
+            "question": "Nothing Ever Happens: Elon Edition"
+        }
+    },
+    {
+        "event_id": "123568",
+        "event_title": "Lead Bank in SpaceX’s IPO?",
+        "best_market": {
+            "id": "1021152",
+            "question": "Will Morgan Stanley or any of its underwriting affiliates serve as the lead underwriter in SpaceX’s initial public offering?"
+        }
+    },
+    {
+        "event_id": "139279",
+        "event_title": "How many Tesla deliveries in Q1 2026?",
+        "best_market": {
+            "id": "1089016",
+            "question": "Will Tesla deliver between 450000 and 475000 vehicles in Q1 2026"
+        }
+    },
+    {
+        "event_id": "149602",
+        "event_title": "Will Elon Musk rejoin the Trump Administration in 2026?",
+        "best_market": {
+            "id": "1130065",
+            "question": "Will Elon Musk rejoin the Trump Administration in 2026?"
+        }
+    },
+    {
+        "event_id": "160625",
+        "event_title": "Nikita Bier out as Head of Product at X by March 31?",
+        "best_market": {
+            "id": "1171311",
+            "question": "Nikita Bier out as Head of Product at X by March 31?"
+        }
+    },
+    {
+        "event_id": "164005",
+        "event_title": "Will Elon Musk get full custody of the St. Clair child?",
+        "best_market": {
+            "id": "1183478",
+            "question": "Will Elon Musk get full custody of the St. Clair child?"
+        }
+    },
+    {
+        "event_id": "164335",
+        "event_title": "Will Elon Musk win his case against Sam Altman?",
+        "best_market": {
+            "id": "1184762",
+            "question": "Will Elon Musk win his case against Sam Altman?"
+        }
+    },
+    {
+        "event_id": "169319",
+        "event_title": "Will Elon Musk buy Ryanair?",
+        "best_market": {
+            "id": "1203147",
+            "question": "Will Elon Musk buy Ryanair?"
+        }
+    },
+    {
+        "event_id": "183698",
+        "event_title": "SpaceX IPO by ___ ?",
+        "best_market": {
+            "id": "1250581",
+            "question": "Will SpaceX IPO by March 31, 2026?"
+        }
+    },
+    {
+        "event_id": "183726",
+        "event_title": "SpaceX IPO Closing Market Cap (Higher Strikes)",
+        "best_market": {
+            "id": "1250810",
+            "question": "Will SpaceX's market cap be greater than $2.0T at market close on IPO day?"
+        }
+    },
+    {
+        "event_id": "191774",
+        "event_title": "xAI Grok score on FrontierMath Benchmark by June 30?",
+        "best_market": {
+            "id": "1285768",
+            "question": "Will any xAI Grok model score at least 40% on the FrontierMath Exam?"
+        }
+    },
+    {
+        "event_id": "49286",
+        "event_title": "Will Tesla release Optimus by...?",
+        "best_market": {
+            "id": "611054",
+            "question": "Will Tesla release Optimus by June 30, 2026?"
+        }
+    },
+    {
+        "event_id": "78468",
+        "event_title": "Which cities will Waymo launch in by June 30?",
+        "best_market": {
+            "id": "675602",
+            "question": "Will Waymo launch in Las Vegas by June 30 2026?"
+        }
+    },
+    {
+        "event_id": "78470",
+        "event_title": "How many cities will Waymo operate in by June 30?",
+        "best_market": {
+            "id": "675604",
+            "question": "Will Waymo operate in 5 cities or less on June 30 2026?"
+        }
+    },
+    {
+        "event_id": "186950",
+        "event_title": "What will Tesla (TSLA) hit in February 2026?",
+        "best_market": {
+            "id": "1262834",
+            "question": "Will Tesla dip to $383 in February?"
+        }
+    },
+    {
+        "event_id": "192925",
+        "event_title": "Tesla and xAI merger officially announced by June 30?",
+        "best_market": {
+            "id": "1296554",
+            "question": "Tesla and xAI merger officially announced by June 30?"
+        }
+    },
+    {
+        "event_id": "192962",
+        "event_title": "Tesla and SpaceX merger officially announced by June 30?",
+        "best_market": {
+            "id": "1296852",
+            "question": "Tesla and SpaceX merger officially announced by June 30?"
+        }
+    },
+    {
+        "event_id": "193971",
+        "event_title": "Will Tesla (TSLA) close above ___ end of February?",
+        "best_market": {
+            "id": "1301840",
+            "question": "Will Tesla (TSLA) close above $430 end of February?"
+        }
+    },
+    {
+        "event_id": "105914",
+        "event_title": "Supreme Court vacancy in 2026?",
+        "best_market": {
+            "id": "941132",
+            "question": "Supreme Court vacancy in 2026?"
+        }
+    },
+    {
+        "event_id": "57088",
+        "event_title": "Israel x Hamas Ceasefire Phase II by...?",
+        "best_market": {
+            "id": "898685",
+            "question": "Israel x Hamas Ceasefire Phase II by March 31?"
+        }
+    },
+    {
+        "event_id": "73050",
+        "event_title": "Israel and Saudi Arabia normalize relations before 2027?",
+        "best_market": {
+            "id": "665218",
+            "question": "Israel and Saudi Arabia normalize relations before 2027?"
+        }
+    },
+    {
+        "event_id": "81557",
+        "event_title": "Who will be the next Prime Minister of Israel after the next election?",
+        "best_market": {
+            "id": "682706",
+            "question": "Will Naftali Bennett be the next Prime Minister of Israel?"
+        }
+    },
+    {
+        "event_id": "97243",
+        "event_title": "MH370 underwater wreckage found by June 30, 2026?",
+        "best_market": {
+            "id": "821114",
+            "question": "MH370 underwater wreckage found by June 30, 2026?"
+        }
+    }
+]
