@@ -278,8 +278,8 @@ def fetch_by_token_ids(
 
     Example:
         df = fetch_by_token_ids({
-            "elon_tweets_yes":  "0xABC...",
-            "gold_above_2900":  "0xDEF...",
+            "elon_tweets_yes":  "0xABC...", 
+            "gold_above_2900":  "0xDEF...", 
         })
     """
     all_series = {}
