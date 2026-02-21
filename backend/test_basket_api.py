@@ -21,6 +21,13 @@ INPUT_MARKET_IDS = [
     "676817",   # Will Tesla launch robotaxis in California by June 30?
     "676900",   # Will Elon Musk be richest person on March 31?
     "676937",   # Will Elon Musk be richest person on December 31?
+    "821114",
+    "682706",
+    "898685",
+    "1296852",
+    "1262834",
+    "1285768",
+    "1183478"
 ]
 
 def test_basket_endpoint():

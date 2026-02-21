@@ -90,6 +90,9 @@ class BasketRequest(BaseModel):
     target_market_id: str
     input_market_ids: list[str]
     days: int = 7
+    use_semantic_filter: bool = True
+    top_k_semantic: int = 10
+    min_similarity: float = 0.4
 
 
 @app.post("/api/basket")
@@ -101,6 +104,9 @@ async def create_basket(request: BasketRequest) -> dict[str, Any]:
         target_market_id: Polymarket market ID for the target
         input_market_ids: List of Polymarket market IDs for inputs
         days: Number of days of historical data to use (default: 7)
+        use_semantic_filter: Filter inputs by semantic similarity (default: True)
+        top_k_semantic: Number of top semantically similar markets to keep (default: 10)
+        min_similarity: Minimum cosine similarity threshold (default: 0.4)
     
     Returns:
         {
@@ -117,7 +123,10 @@ async def create_basket(request: BasketRequest) -> dict[str, Any]:
             target_market_id=request.target_market_id,
             input_market_ids=request.input_market_ids,
             days=request.days,
-            verbose=False
+            verbose=False,
+            use_semantic_filter=request.use_semantic_filter,
+            top_k_semantic=request.top_k_semantic,
+            min_similarity=request.min_similarity
         )
         return result
     except Exception as e:
