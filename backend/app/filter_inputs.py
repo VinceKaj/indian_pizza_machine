@@ -1,72 +1,99 @@
-"""
-Semantic similarity filtering for market selection.
-Uses sentence transformers to rank and filter input markets by relevance.
-"""
 import logging
+import warnings
 from sentence_transformers import SentenceTransformer, util
 import torch
 
+# Suppress transformers model loading warnings
+import os
+os.environ['TRANSFORMERS_VERBOSITY'] = 'error'
+
 logger = logging.getLogger(__name__)
 
-# Load semantic similarity model once (lazy loading)
 _semantic_model = None
-
 
 def get_semantic_model():
     """Lazy load the sentence transformer model."""
     global _semantic_model
     if _semantic_model is None:
-        logger.info("Loading sentence transformer model 'all-MiniLM-L6-v2' (first time may take a moment)...")
+        logger.info("Loading sentence transformer model 'all-MiniLM-L6-v2'...")
+        
+        # Suppress transformer library warnings during model load
+        import transformers
+        transformers.logging.set_verbosity_error()
+        
         _semantic_model = SentenceTransformer('all-MiniLM-L6-v2')
         logger.info("Model loaded successfully!")
     return _semantic_model
 
-
-def filter_by_semantic_similarity(target_question, candidate_dict, top_k=10, min_similarity=0.4, verbose=False):
+def filter_by_semantic_similarity(target_question, candidate_dict, top_k=10, 
+                                  min_similarity=0.4, max_pairwise_similarity=0.85, 
+                                  verbose=False):
     """
-    Filter candidate markets by semantic similarity to target question.
+    Filter candidate markets by semantic similarity to target question, 
+    while forcing diversity by excluding highly redundant markets.
     
     Args:
         target_question: The target market question
         candidate_dict: {market_id: "Market Question Text"}
         top_k: Number of top matches to return (default: 10)
-        min_similarity: Minimum cosine similarity threshold (default: 0.4)
-        verbose: Whether to print similarity scores
-    
-    Returns:
-        List of top_k market IDs sorted by semantic similarity (above threshold)
+        min_similarity: Minimum similarity to the target (default: 0.4)
+        max_pairwise_similarity: Maximum allowed similarity between selected inputs (default: 0.85)
     """
-    logger.info(f"🔍 Filtering {len(candidate_dict)} candidates to top {top_k} by semantic similarity (threshold: {min_similarity})...")
+    logger.info(f"🔍 Filtering {len(candidate_dict)} candidates to top {top_k}...")
     model = get_semantic_model()
     
     candidates = list(candidate_dict.values())
     market_ids = list(candidate_dict.keys())
     
-    # Generate embeddings
-    logger.info("Encoding target question...")
+    # 1. Generate embeddings
     target_embedding = model.encode(target_question, convert_to_tensor=True)
-    
-    logger.info(f"Encoding {len(candidates)} candidate questions...")
     candidate_embeddings = model.encode(candidates, convert_to_tensor=True)
     
-    # Calculate cosine similarity
-    logger.info("Computing cosine similarity scores...")
+    # 2. Calculate cosine similarity to the TARGET
     cosine_scores = util.cos_sim(target_embedding, candidate_embeddings)[0]
     
-    # Get top k indices
-    k = min(top_k, len(candidates))
-    top_results = torch.topk(cosine_scores, k=k)
+    # 3. Sort candidates from most relevant to least relevant
+    sorted_indices = torch.argsort(cosine_scores, descending=True)
     
-    # Filter by similarity threshold
-    filtered_results = [(score, idx) for score, idx in zip(top_results.values, top_results.indices) if score >= min_similarity]
+    selected_indices = []
+    selected_scores = []
     
-    if len(filtered_results) < len(top_results.values):
-        logger.warning(f"⚠️  {len(top_results.values) - len(filtered_results)} market(s) excluded due to similarity < {min_similarity}")
+    # 4. Greedy Diversity Selection
+    for idx in sorted_indices:
+        score = cosine_scores[idx].item()
+        
+        # Stop immediately if the best remaining candidate is below target threshold
+        if score < min_similarity:
+            break
+            
+        candidate_emb = candidate_embeddings[idx]
+        is_redundant = False
+        
+        # Check similarity against ALREADY SELECTED markets
+        if selected_indices:
+            # Stack the embeddings of markets we've already approved
+            selected_tensor = candidate_embeddings[selected_indices]
+            
+            # Compare current candidate to all approved candidates
+            redundancy_scores = util.cos_sim(candidate_emb, selected_tensor)[0]
+            max_redundancy = torch.max(redundancy_scores).item()
+            
+            # If it's too similar to something we already have, skip it
+            if max_redundancy > max_pairwise_similarity:
+                if verbose:
+                    logger.info(f"  ❌ Skipping: [{score:.4f}] {candidates[idx][:50]}... "
+                                f"(Redundancy: {max_redundancy:.4f})")
+                continue
+                
+        # If it passes the redundancy check, add it to our final basket
+        selected_indices.append(idx.item())
+        selected_scores.append(score)
+        
+        if len(selected_indices) == top_k:
+            break
+
+    logger.info(f"✅ Selected {len(selected_indices)} diverse markets:")
+    for score, idx in zip(selected_scores, selected_indices):
+        logger.info(f"  [{score:.4f}] {candidates[idx]}")
     
-    logger.info(f"✅ Selected {len(filtered_results)} markets above {min_similarity} threshold:")
-    for idx, (score, i) in enumerate(filtered_results):
-        market_id = market_ids[i]
-        question = candidates[i]
-        logger.info(f"  {idx+1}. [{score:.4f}] {question[:80]}...")
-    
-    return [market_ids[i] for score, i in filtered_results]
+    return [market_ids[i] for i in selected_indices]
