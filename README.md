@@ -55,6 +55,7 @@ uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 - API: http://localhost:8000  
 - Docs: http://localhost:8000/docs  
 - **Auto-updating endpoint:** `GET /api/updates` — returns data refreshed in the background every 10 seconds (poll for latest).
+- **Polymarket proxy:** `GET /api/polymarket?url=<polymarket_url>` — pass any Polymarket event or market URL; returns all data Polymarket provides so the frontend does not query Polymarket directly.
 
 ### ML
 

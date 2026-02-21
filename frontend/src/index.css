@@ -1,5 +1,9 @@
 @import "tailwindcss";
 
+html, body {
+  overflow-x: hidden;
+}
+
 @keyframes ticker {
   0% { transform: translateX(0); }
   100% { transform: translateX(-50%); }
@@ -13,3 +17,26 @@
 .ticker {
   animation: ticker 25s linear infinite;
 }
+
+/* Page transition: blue swipes across the screen */
+@keyframes blue-swipe {
+  0% { transform: translateX(-100%); }
+  45% { transform: translateX(0); }
+  100% { transform: translateX(100%); }
+}
+.page-swipe {
+  animation: blue-swipe 0.7s ease-in-out forwards;
+  pointer-events: none;
+}
+
+/* Remove default search clear (X) button */
+.search-input::-webkit-search-cancel-button {
+  appearance: none;
+  -webkit-appearance: none;
+  display: none;
+}
+.search-input::-webkit-search-decoration {
+  appearance: none;
+  -webkit-appearance: none;
+}
+
