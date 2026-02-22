@@ -16,7 +16,7 @@ if (!fs.existsSync(venvPython)) {
   process.exit(1);
 }
 
-const child = spawn(venvPython, ['-m', 'uvicorn', 'app.main:app', '--reload', '--host', '0.0.0.0', '--port', '8000'], {
+const child = spawn(venvPython, ['-m', 'uvicorn', 'app.main:app', '--reload', '--host', '0.0.0.0', '--port', '9000'], {
   cwd: backend,
   stdio: 'inherit',
   shell: false,

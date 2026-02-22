@@ -21,6 +21,30 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from sentence_transformers import SentenceTransformer
 
+try:
+    from app.graph import (
+        init_driver,
+        close_driver,
+        clear_graph,
+        ingest_polymarket,
+        ingest_wikipedia,
+        postprocess_merge_duplicate_entities,
+        find_connections,
+        find_indirect_datasources,
+        search_nodes,
+        graph_stats,
+        IngestResponse,
+        TraverseResponse,
+        DatasourceResponse,
+        SearchResponse,
+        StatsResponse,
+        PostprocessResponse,
+    )
+    _graph_available = True
+except Exception as _graph_err:
+    _graph_available = False
+    _graph_err_msg = str(_graph_err)
+
 logger = logging.getLogger(__name__)
 
 GAMMA_API_BASE = "https://gamma-api.polymarket.com"
@@ -207,6 +231,16 @@ async def lifespan(app: FastAPI):
     await loop.run_in_executor(None, _model.encode, "warmup")
     logger.info("Model warmed up.")
 
+    # Neo4j knowledge graph (only if graph module loaded)
+    _neo4j_ok = False
+    if _graph_available:
+        try:
+            await init_driver()
+            _neo4j_ok = True
+            logger.info("Neo4j knowledge graph ready.")
+        except Exception:
+            logger.warning("Neo4j unavailable — graph endpoints will 503. Start Neo4j and restart.")
+
     await _refresh_updates()
     await _refresh_tag_cache()
     updates_task = asyncio.create_task(_background_updater(interval_seconds=10.0))
@@ -220,6 +254,9 @@ async def lifespan(app: FastAPI):
             await t
         except asyncio.CancelledError:
             pass
+
+    if _neo4j_ok:
+        await close_driver()
 
 
 app = FastAPI(
@@ -236,6 +273,11 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+if _graph_available:
+    print(">>> Graph module loaded — /api/graph/* will be registered at end of module <<<", flush=True)
+else:
+    print(f">>> Graph module NOT loaded ({_graph_err_msg}) — /api/graph/* routes disabled <<<", flush=True)
 
 
 @app.get("/health")
@@ -760,3 +802,80 @@ async def semantic_search(body: SemanticSearchRequest) -> SemanticSearchResponse
         total_events=len(out_events),
         word_search_markets=word_search_markets,
     )
+
+
+# --- Knowledge graph endpoints (registered last so they appear in OpenAPI) ---
+if _graph_available:
+
+    @app.post("/api/graph/ingest", response_model=IngestResponse, tags=["Knowledge graph"])
+    async def api_graph_ingest(fresh: bool = Query(False, description="Clear graph before ingesting")) -> IngestResponse:
+        """Trigger Polymarket + Wikipedia ingestion pipeline."""
+        try:
+            if fresh:
+                await clear_graph()
+            poly = await ingest_polymarket()
+            wiki = await ingest_wikipedia()
+            return IngestResponse(status="complete", polymarket=poly, wikipedia=wiki)
+        except Exception as exc:
+            logger.exception("Graph ingest failed")
+            raise HTTPException(status_code=500, detail=str(exc))
+
+    @app.get("/api/graph/traverse", response_model=TraverseResponse, tags=["Knowledge graph"])
+    async def api_graph_traverse(
+        name: str = Query(..., description="Entity name to start from"),
+        depth: int = Query(3, ge=1, le=6, description="Max hops"),
+        include_events_markets: bool = Query(
+            True,
+            description="Include paths ending at Event or Market",
+        ),
+        include_persons_companies: bool = Query(
+            True,
+            description="Include paths ending at Person or Company",
+        ),
+    ) -> TraverseResponse:
+        """Find connections from a named entity. Filter by end-node type: events/markets and/or persons/companies."""
+        paths = await find_connections(
+            name,
+            max_depth=depth,
+            include_events_markets=include_events_markets,
+            include_persons_companies=include_persons_companies,
+        )
+        return TraverseResponse(
+            name=name,
+            depth=depth,
+            include_events_markets=include_events_markets,
+            include_persons_companies=include_persons_companies,
+            paths=paths,
+        )
+
+    @app.post("/api/graph/postprocess", response_model=PostprocessResponse, tags=["Knowledge graph"])
+    async def api_graph_postprocess() -> PostprocessResponse:
+        """Merge duplicate Person/Company nodes (e.g. 'Elon' into 'Elon Musk'). Safe to run after ingestion."""
+        try:
+            result = await postprocess_merge_duplicate_entities()
+            return PostprocessResponse(**result)
+        except Exception as exc:
+            logger.exception("Graph postprocess failed")
+            raise HTTPException(status_code=500, detail=str(exc))
+
+    @app.get("/api/graph/datasources", response_model=DatasourceResponse, tags=["Knowledge graph"])
+    async def api_graph_datasources(
+        name: str = Query(..., description="Entity to find linked data sources for"),
+    ) -> DatasourceResponse:
+        """Find all DataSource nodes reachable from a named entity."""
+        ds = await find_indirect_datasources(name)
+        return DatasourceResponse(name=name, datasources=ds)
+
+    @app.get("/api/graph/search", response_model=SearchResponse, tags=["Knowledge graph"])
+    async def api_graph_search(
+        q: str = Query(..., min_length=1, description="Search query"),
+    ) -> SearchResponse:
+        """Full-text search across graph nodes."""
+        results = await search_nodes(q)
+        return SearchResponse(query=q, results=results)
+
+    @app.get("/api/graph/stats", response_model=StatsResponse, tags=["Knowledge graph"])
+    async def api_graph_stats() -> StatsResponse:
+        """Graph statistics: node and relationship counts."""
+        s = await graph_stats()
+        return StatsResponse(**s)

@@ -1,0 +1,17 @@
+services:
+  neo4j:
+    image: neo4j:5-community
+    container_name: indian_pizza_neo4j
+    ports:
+      - "7474:7474"
+      - "7687:7687"
+    volumes:
+      - ./neo4j_data/data:/data
+      - ./neo4j_data/logs:/logs
+      - ./neo4j_data/plugins:/plugins
+    environment:
+      NEO4J_AUTH: neo4j/polymarket123
+      NEO4J_PLUGINS: '["apoc"]'
+      NEO4J_dbms_security_procedures_unrestricted: apoc.*
+      NEO4J_dbms_security_procedures_allowlist: apoc.*
+    restart: unless-stopped
