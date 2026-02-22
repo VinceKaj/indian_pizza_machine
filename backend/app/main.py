@@ -1178,6 +1178,7 @@ class BasketRequest(BaseModel):
     use_semantic_filter: bool = True
     top_k_semantic: int = 10
     min_similarity: float = 0.4
+    max_target_similarity: float = 1
 
 
 @app.post("/api/basket")
@@ -1192,6 +1193,7 @@ async def create_basket(request: BasketRequest) -> dict[str, Any]:
         use_semantic_filter: Filter inputs by semantic similarity (default: True)
         top_k_semantic: Number of top semantically similar markets to keep (default: 10)
         min_similarity: Minimum cosine similarity threshold (default: 0.4)
+        max_target_similarity: Maximum similarity to target - filters out near-duplicates (default: 0.95)
     
     Returns:
         {
@@ -1218,7 +1220,8 @@ async def create_basket(request: BasketRequest) -> dict[str, Any]:
             verbose=False,
             use_semantic_filter=request.use_semantic_filter,
             top_k_semantic=request.top_k_semantic,
-            min_similarity=request.min_similarity
+            min_similarity=request.min_similarity,
+            max_target_similarity=request.max_target_similarity
         )
         return result
     except Exception as e:

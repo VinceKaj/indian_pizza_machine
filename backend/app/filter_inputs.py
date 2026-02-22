@@ -27,7 +27,7 @@ def get_semantic_model():
 
 def filter_by_semantic_similarity(target_question, candidate_dict, top_k=10, 
                                   min_similarity=0.4, max_pairwise_similarity=0.85, 
-                                  verbose=False, target_description=""):
+                                  verbose=False, target_description="", max_target_similarity=1):
     """
     Filter candidate markets by semantic similarity to target question, 
     while forcing diversity by excluding highly redundant markets.
@@ -40,6 +40,7 @@ def filter_by_semantic_similarity(target_question, candidate_dict, top_k=10,
         max_pairwise_similarity: Maximum allowed similarity between selected inputs (default: 0.85)
         verbose: Whether to print detailed logs (default: False)
         target_description: Optional target market description for deeper similarity (default: "")
+        max_target_similarity: Maximum similarity to target - filters out near-duplicates (default: 0.95)
     """
     logger.info(f"🔍 Filtering {len(candidate_dict)} candidates to top {top_k} (using Title + Description)...")
     model = get_semantic_model()
@@ -70,8 +71,29 @@ def filter_by_semantic_similarity(target_question, candidate_dict, top_k=10,
     # 2. Calculate cosine similarity to the TARGET
     cosine_scores = util.cos_sim(target_embedding, candidate_embeddings)[0]
     
-    # 3. Sort candidates from most relevant to least relevant
-    sorted_indices = torch.argsort(cosine_scores, descending=True)
+    # 2.5. Filter out near-duplicates (markets TOO similar to the target)
+    valid_indices = []
+    excluded_count = 0
+    for idx, score in enumerate(cosine_scores):
+        score_val = score.item()
+        if score_val > max_target_similarity:
+            logger.info(f"  ❌ Excluding near-duplicate (sim={score_val:.4f}): {candidate_questions[idx][:60]}...")
+            excluded_count += 1
+        else:
+            valid_indices.append(idx)
+    
+    if excluded_count > 0:
+        logger.info(f"Excluded {excluded_count} near-duplicate markets, {len(valid_indices)} remaining")
+    
+    # If all candidates were filtered out, return empty
+    if not valid_indices:
+        logger.warning("All candidates were filtered out as near-duplicates!")
+        return []
+    
+    # 3. Sort candidates from most relevant to least relevant (only valid ones)
+    valid_scores = cosine_scores[valid_indices]
+    sorted_order = torch.argsort(valid_scores, descending=True)
+    sorted_indices = [valid_indices[i] for i in sorted_order]
     
     selected_indices = []
     selected_scores = []
