@@ -93,7 +93,7 @@ def filter_by_semantic_similarity(target_question, candidate_dict, top_k=10,
     # 3. Sort candidates from most relevant to least relevant (only valid ones)
     valid_scores = cosine_scores[valid_indices]
     sorted_order = torch.argsort(valid_scores, descending=True)
-    sorted_indices = [valid_indices[i] for i in sorted_order]
+    sorted_indices = [valid_indices[int(i)] for i in sorted_order]
     
     selected_indices = []
     selected_scores = []
@@ -126,7 +126,7 @@ def filter_by_semantic_similarity(target_question, candidate_dict, top_k=10,
                 continue
                 
         # If it passes the redundancy check, add it to our final basket
-        selected_indices.append(idx.item())
+        selected_indices.append(int(idx))
         selected_scores.append(score)
         
         if len(selected_indices) == top_k:

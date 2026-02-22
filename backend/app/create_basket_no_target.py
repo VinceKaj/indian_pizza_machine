@@ -129,9 +129,20 @@ def apply_diversity_filter(candidate_dict, top_k=10, max_pairwise_similarity=0.8
 
 
 def build_basket_no_target(input_market_ids, top_k=10, temperature=0.1, 
-                           use_diversity_filter=True, max_pairwise_similarity=0.85):
+                           use_diversity_filter=True, max_pairwise_similarity=0.85, days=7):
     """
     Build a basket without a target market using deep semantic similarity and softmax weighting.
+    
+    Args:
+        input_market_ids: List of Polymarket market IDs
+        top_k: Maximum number of markets to include (default: 10)
+        temperature: Temperature for softmax weighting (default: 0.1)
+        use_diversity_filter: Whether to apply diversity filtering (default: True)
+        max_pairwise_similarity: Maximum similarity between markets (default: 0.85)
+        days: Number of days of historical data to fetch (default: 7)
+    
+    Returns:
+        dict with weights, synthetic_prices, timestamps, etc.
     """
     logger.info(f"🚀 Creating basket without target from {len(input_market_ids)} input markets")
     logger.info(f"📊 Parameters: top_k={top_k}, temperature={temperature}, diversity_filter={use_diversity_filter}")
@@ -229,7 +240,7 @@ def build_basket_no_target(input_market_ids, top_k=10, temperature=0.1,
     synthetic_prices = []
     try:
         end_date = datetime.now()
-        start_date = end_date - timedelta(days=7)
+        start_date = end_date - timedelta(days=days)
         start_ts = start_date.timestamp()
         end_ts = end_date.timestamp()
         series_list = []

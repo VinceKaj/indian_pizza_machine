@@ -1,6 +1,6 @@
 import { useEffect, useState, useMemo, useRef, useCallback } from 'react'
 import { Routes, Route, useNavigate, useLocation, useParams } from 'react-router-dom'
-import { ResponsiveContainer, ComposedChart, Area, Line, XAxis, YAxis, Tooltip, CartesianGrid } from 'recharts'
+import { ResponsiveContainer, ComposedChart, Area, Line, LineChart, XAxis, YAxis, Tooltip, CartesianGrid } from 'recharts'
 import ForceGraph2D from 'react-force-graph-2d'
 
 function Section({ title, children, className = '' }) {
@@ -558,8 +558,8 @@ function EventPage() {
       <header className="sticky top-0 z-50 bg-blue-700">
         <nav className="flex h-20 items-center justify-between px-4 md:px-6">
           <a href="/" className="flex items-center gap-2 shrink-0">
-            <span className="flex h-8 w-8 items-center justify-center bg-white/20 font-bold text-white text-sm">PA</span>
-            <span className="hidden font-semibold tracking-tight text-white sm:inline">Polymarket Arb</span>
+            <span className="flex h-8 w-8 items-center justify-center bg-white/20 font-bold text-white text-sm">PC</span>
+            <span className="hidden font-semibold tracking-tight text-white sm:inline">Polychain</span>
           </a>
           <div className="flex items-center gap-6">
             <ul className="hidden gap-6 md:flex">
@@ -1039,8 +1039,8 @@ function SemanticResultsPage() {
       <header className="sticky top-0 z-50 pb-12 bg-[linear-gradient(to_bottom,rgb(29_78_216)_0%,rgb(37_99_235)_35%,rgb(59_130_246)_50%,rgb(147_197_253)_65%,rgb(219_234_254)_80%,rgb(239_246_255)_100%)]">
         <nav className="flex h-20 items-center justify-between px-4 md:px-6">
           <a href="/" className="flex items-center gap-2 shrink-0">
-            <span className="flex h-8 w-8 items-center justify-center bg-white/20 font-bold text-white text-sm">PA</span>
-            <span className="hidden font-semibold tracking-tight text-white sm:inline">Polymarket Arb</span>
+            <span className="flex h-8 w-8 items-center justify-center bg-white/20 font-bold text-white text-sm">PC</span>
+            <span className="hidden font-semibold tracking-tight text-white sm:inline">Polychain</span>
           </a>
           <form className="w-full max-w-[200px] md:max-w-[240px]" onSubmit={handleNavSearchSubmit}>
             <div className="group relative flex w-full items-center rounded pl-2.5 pr-2.5">
@@ -1515,8 +1515,8 @@ function HomePage() {
       <header className="sticky top-0 z-50 bg-blue-700">
         <nav className="mx-auto flex h-20 max-w-7xl items-center justify-between gap-6 px-2 md:px-3">
           <a href="/" className="flex items-center gap-2 shrink-0">
-            <span className="flex h-8 w-8 items-center justify-center bg-white/20 font-bold text-white text-sm">PA</span>
-            <span className="hidden font-semibold tracking-tight text-white sm:inline">Polymarket Arb</span>
+            <span className="flex h-8 w-8 items-center justify-center bg-white/20 font-bold text-white text-sm">PC</span>
+            <span className="hidden font-semibold tracking-tight text-white sm:inline">Polychain</span>
           </a>
           <ul className="hidden flex-1 justify-end gap-8 md:flex">
             <li><a href="/" className="text-sm text-white hover:text-white/80">Home</a></li>
@@ -1559,7 +1559,7 @@ function HomePage() {
           </div>
           <div className="relative z-10 mx-auto w-full max-w-7xl">
             <h1 className="text-4xl font-bold tracking-tight text-white md:text-5xl">Find markets</h1>
-            <p className="mt-3 text-lg text-white/90">Build your own personalised prediction ETF</p>
+            <p className="mt-3 text-lg text-white/90">Build your own personalised prediction market ETF</p>
             <form className="mt-8 max-w-2xl" onSubmit={handleSearchSubmit}>
               <div className="group relative flex w-full items-center border-0 pl-4 pr-4 md:pl-4">
                 <div
@@ -1843,8 +1843,8 @@ function GraphAnalysisPage() {
         >
           <div className="flex items-center justify-between gap-2">
             <a href="/" className="flex items-center gap-2 shrink-0 text-black/70 hover:text-black">
-              <span className="flex h-7 w-7 items-center justify-center rounded bg-black/10 font-bold text-xs">PA</span>
-              <span className="text-sm font-medium">Polymarket Arb</span>
+              <span className="flex h-7 w-7 items-center justify-center rounded bg-black/10 font-bold text-xs">PC</span>
+              <span className="text-sm font-medium">Polychain</span>
             </a>
             <form className="flex-1 min-w-0" onSubmit={handleNavSearchSubmit}>
               <div className="flex items-center rounded-lg bg-black/5 border border-black/8 px-2.5 py-1.5 focus-within:border-blue-400 focus-within:ring-1 focus-within:ring-blue-400">
