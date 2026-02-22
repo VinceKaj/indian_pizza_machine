@@ -7,6 +7,7 @@ import numpy as np
 import requests
 import logging
 import torch
+from datetime import datetime, timedelta
 
 # Assuming get_semantic_model now loads BAAI/bge-large-en-v1.5
 from app.filter_inputs import get_semantic_model
@@ -40,6 +41,33 @@ def get_clob_token_ids(market_id):
         raise ValueError(f"Market {market_id} doesn't have CLOB token IDs")
     
     return clob_ids[0], clob_ids[1], data.get('question', 'Unknown'), data.get('description', '')
+
+
+def fetch_historical_prices(clob_token_id, start_ts, end_ts):
+    """
+    Fetches historical prices from Polymarket using CLOB token ID.
+    """
+    url = "https://clob.polymarket.com/prices-history"
+    params = {
+        "market": clob_token_id,
+        "startTs": int(start_ts),
+        "endTs": int(end_ts),
+        "fidelity": 60  # 60-minute fidelity
+    }
+    
+    response = requests.get(url, params=params)
+    data = response.json().get('history', [])
+    
+    if not data:
+        return pd.Series(dtype=float, index=pd.DatetimeIndex([]))
+    
+    df = pd.DataFrame(data)
+    df['datetime'] = pd.to_datetime(df['t'], unit='s')
+    df.set_index('datetime', inplace=True)
+    s = df['p'].astype(float)
+    if not isinstance(s.index, pd.DatetimeIndex):
+        s.index = pd.to_datetime(s.index)
+    return s
 
 
 def apply_diversity_filter(candidate_dict, top_k=10, max_pairwise_similarity=0.85):
@@ -105,9 +133,20 @@ def apply_diversity_filter(candidate_dict, top_k=10, max_pairwise_similarity=0.8
 
 
 def build_basket_no_target(input_market_ids, top_k=10, temperature=0.1, 
-                           use_diversity_filter=True, max_pairwise_similarity=0.85):
+                           use_diversity_filter=True, max_pairwise_similarity=0.85, days=7):
     """
     Build a basket without a target market using deep semantic similarity and softmax weighting.
+    
+    Args:
+        input_market_ids: List of Polymarket market IDs
+        top_k: Maximum number of markets to include (default: 10)
+        temperature: Temperature for softmax weighting (default: 0.1)
+        use_diversity_filter: Whether to apply diversity filtering (default: True)
+        max_pairwise_similarity: Maximum similarity between markets (default: 0.85)
+        days: Number of days of historical data to fetch (default: 7)
+    
+    Returns:
+        dict with weights, synthetic_prices, timestamps, etc.
     """
     logger.info(f"🚀 Creating basket without target from {len(input_market_ids)} input markets")
     logger.info(f"📊 Parameters: top_k={top_k}, temperature={temperature}, diversity_filter={use_diversity_filter}")
@@ -200,6 +239,70 @@ def build_basket_no_target(input_market_ids, top_k=10, temperature=0.1,
         for i, mid in enumerate(selected_market_ids)
     ]
     
+    # 4. Fetch historical prices and calculate synthetic basket
+    logger.info(f"[4/4] 💹 Fetching price histories and calculating synthetic basket...")
+    
+    end_date = datetime.now()
+    start_date = end_date - timedelta(days=days)
+    start_ts = start_date.timestamp()
+    end_ts = end_date.timestamp()
+    
+    # Fetch prices for each market
+    price_series_list = []
+    for i, mid in enumerate(selected_market_ids):
+        try:
+            clob_id, _, _, _ = get_clob_token_ids(mid)
+            series = fetch_historical_prices(clob_id, start_ts, end_ts)
+            series.name = selected_info[i].get('question', '')
+            price_series_list.append(series)
+            logger.info(f"  Market {i+1}/{len(selected_market_ids)}: {len(series)} data points")
+        except Exception as e:
+            logger.warning(f"Failed to fetch prices for {mid}: {e}")
+            # Create empty series as placeholder
+            price_series_list.append(pd.Series(dtype=float, index=pd.DatetimeIndex([])))
+    
+    # Resample and align all series
+    def ensure_datetime_index(series):
+        if series.empty:
+            return pd.Series(dtype=float, index=pd.DatetimeIndex([]))
+        if not isinstance(series.index, pd.DatetimeIndex):
+            series = series.copy()
+            series.index = pd.to_datetime(series.index)
+        return series
+    
+    resampled_list = []
+    for series in price_series_list:
+        series = ensure_datetime_index(series)
+        if not series.empty:
+            resampled = series.resample('1h').last().ffill()
+            resampled.name = series.name
+            resampled_list.append(resampled)
+    
+    if resampled_list:
+        # Concat on same time grid
+        df = pd.concat(resampled_list, axis=1, sort=True)
+        df = df.ffill()
+        df = df.dropna()
+        
+        if not df.empty:
+            # Calculate synthetic price using weights
+            X = df.values
+            weights_array = np.array([weights[i] for i in range(len(selected_market_ids))])
+            synthetic = X @ weights_array
+            
+            logger.info(f"✅ Synthetic basket calculated: {len(df)} hourly observations")
+            
+            return {
+                'weights': weights_output,
+                'total_markets': len(selected_market_ids),
+                'centroid_question': centroid_question,
+                'temperature': temperature,
+                'synthetic_prices': synthetic.tolist(),
+                'timestamps': [ts.isoformat() for ts in df.index]
+            }
+    
+    # Fallback if no price data available
+    logger.warning("No overlapping price data available for visualization")
     return {
         'weights': weights_output,
         'total_markets': len(selected_market_ids),

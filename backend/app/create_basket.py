@@ -64,7 +64,8 @@ def fetch_historical_prices(clob_token_id, start_ts, end_ts):
 
 
 def build_synthetic_basket(target_market_id, input_market_ids, days=7, verbose=False,
-                           use_semantic_filter=True, top_k_semantic=10, min_similarity=0.4):
+                           use_semantic_filter=True, top_k_semantic=10, min_similarity=0.4,
+                           max_target_similarity=0.95):
     """
     Build a synthetic basket to replicate a target market using input markets.
     
@@ -76,6 +77,7 @@ def build_synthetic_basket(target_market_id, input_market_ids, days=7, verbose=F
         use_semantic_filter: Whether to filter inputs by semantic similarity (default: True)
         top_k_semantic: Number of top semantically similar markets to keep (default: 10)
         min_similarity: Minimum cosine similarity threshold (default: 0.4)
+        max_target_similarity: Maximum similarity to target - filters out near-duplicates (default: 0.95)
     
     Returns:
         dict with:
@@ -127,7 +129,8 @@ def build_synthetic_basket(target_market_id, input_market_ids, days=7, verbose=F
             top_k=top_k_semantic,
             min_similarity=min_similarity,
             verbose=verbose,
-            target_description=target_description
+            target_description=target_description,
+            max_target_similarity=max_target_similarity
         )
     else:
         filtered_market_ids = list(candidate_dict.keys())
