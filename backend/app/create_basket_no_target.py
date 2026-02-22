@@ -9,7 +9,7 @@ import logging
 import torch
 
 # Assuming get_semantic_model now loads BAAI/bge-large-en-v1.5
-from filter_inputs import get_semantic_model
+from app.filter_inputs import get_semantic_model
 from sentence_transformers import util
 
 # Configure logging

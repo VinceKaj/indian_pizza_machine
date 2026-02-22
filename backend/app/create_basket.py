@@ -6,10 +6,8 @@ import requests
 from datetime import datetime, timedelta
 import logging
 
-from filter_inputs import filter_by_semantic_similarity
+from app.filter_inputs import filter_by_semantic_similarity
 
-# Configure logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
 
@@ -54,12 +52,15 @@ def fetch_historical_prices(clob_token_id, start_ts, end_ts):
     data = response.json().get('history', [])
     
     if not data:
-        return pd.Series(dtype=float)
+        return pd.Series(dtype=float, index=pd.DatetimeIndex([]))
     
     df = pd.DataFrame(data)
     df['datetime'] = pd.to_datetime(df['t'], unit='s')
     df.set_index('datetime', inplace=True)
-    return df['p'].astype(float)
+    s = df['p'].astype(float)
+    if not isinstance(s.index, pd.DatetimeIndex):
+        s.index = pd.to_datetime(s.index)
+    return s
 
 
 def build_synthetic_basket(target_market_id, input_market_ids, days=7, verbose=False,
@@ -153,11 +154,21 @@ def build_synthetic_basket(target_market_id, input_market_ids, days=7, verbose=F
     # 4. Align and resample data
     logger.info(f"[4/5] 📐 Aligning time series data to hourly bars...")
     
+    def ensure_datetime_index(series):
+        if series.empty:
+            return pd.Series(dtype=float, index=pd.DatetimeIndex([]))
+        if not isinstance(series.index, pd.DatetimeIndex):
+            series = series.copy()
+            series.index = pd.to_datetime(series.index)
+        return series
+
+    target_series = ensure_datetime_index(target_series)
     target_resampled = target_series.resample('1h').last().ffill()
     logger.info(f"Target: {len(target_series)} ticks → {len(target_resampled)} bars")
     
     input_resampled_list = []
     for i, series in enumerate(input_series_list):
+        series = ensure_datetime_index(series)
         resampled = series.resample('1h').last().ffill()
         resampled.name = series.name
         input_resampled_list.append(resampled)

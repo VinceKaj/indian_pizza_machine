@@ -9,6 +9,8 @@ import asyncio
 import json
 import logging
 import math
+
+logging.basicConfig(level=logging.WARNING)
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -226,23 +228,15 @@ async def _tag_cache_updater(interval_seconds: float = 1800.0) -> None:
 async def lifespan(app: FastAPI):
     """Load ML model, seed caches, and start background tasks."""
     global _model
-    print(">>> Semantic search API: TAG-BASED (matched_tags + events) <<<", flush=True)
-    logger.info("Loading sentence-transformer model '%s' …", EMBEDDING_MODEL_NAME)
     _model = SentenceTransformer(EMBEDDING_MODEL_NAME)
-    logger.info("Model loaded.")
-
-    # Warm up the model with a dummy encode so the first real request is fast
     loop = asyncio.get_running_loop()
     await loop.run_in_executor(None, _model.encode, "warmup")
-    logger.info("Model warmed up.")
 
-    # Neo4j knowledge graph (only if graph module loaded)
     _neo4j_ok = False
     if _graph_available:
         try:
             await init_driver()
             _neo4j_ok = True
-            logger.info("Neo4j knowledge graph ready.")
         except Exception:
             logger.warning("Neo4j unavailable — graph endpoints will 503. Start Neo4j and restart.")
 
@@ -279,10 +273,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-if _graph_available:
-    print(">>> Graph module loaded — /api/graph/* will be registered at end of module <<<", flush=True)
-else:
-    print(f">>> Graph module NOT loaded ({_graph_err_msg}) — /api/graph/* routes disabled <<<", flush=True)
+if not _graph_available:
+    logger.warning("Graph module NOT loaded (%s) — /api/graph/* routes disabled", _graph_err_msg)
 
 
 @app.get("/health")
@@ -772,11 +764,26 @@ async def semantic_search(body: SemanticSearchRequest) -> SemanticSearchResponse
                 best_m = m
         if best_m is None:
             best_m = markets[0]
+        # Debug: log full market object so caller can see which id to use (check server logs)
+        logger.info(
+            "[best_market] Full market object keys: %s | id=%s market_id=%s conditionId=%s",
+            list(best_m.keys()),
+            best_m.get("id"),
+            best_m.get("market_id"),
+            best_m.get("conditionId"),
+        )
+        logger.info("[best_market] Full target market object: %s", json.dumps({k: v for k, v in best_m.items() if k not in ("description", "resolutionSource")}, default=str))
+        # Use the market id from the market object (nested in event.markets[]); Gamma expects this for GET /markets/{id}
+        market_id = best_m.get("id") or best_m.get("market_id")
+        if market_id is not None:
+            market_id = str(market_id)
+        else:
+            market_id = ""
         return EventWithBestMarket(
             event_id=eid,
             event_title=title,
             best_market=BestMarketSummary(
-                id=str(best_m.get("id", "")),
+                id=market_id,
                 question=best_m.get("question") or best_m.get("questionTitle") or "",
             ),
         )
@@ -789,6 +796,21 @@ async def semantic_search(body: SemanticSearchRequest) -> SemanticSearchResponse
         out_events, word_search_markets = await asyncio.gather(
             out_events_task, word_search_task
         )
+        # Resolve word-search market ids to the same field as best_market.id (Gamma market id)
+        for wm in word_search_markets:
+            if not wm.id:
+                continue
+            try:
+                r = await client.get(f"{GAMMA_API_BASE}/markets/{wm.id.strip()}")
+                if r.status_code == 200:
+                    full = r.json()
+                    m = full[0] if isinstance(full, list) and full else full
+                    if isinstance(m, dict):
+                        resolved = m.get("id") or m.get("market_id")
+                        if resolved is not None:
+                            wm.id = str(resolved)
+            except Exception:
+                pass
 
     # Compute embedding similarity for word-search results
     if word_search_markets and _model is not None:

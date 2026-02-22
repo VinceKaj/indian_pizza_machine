@@ -67,13 +67,9 @@ def get_llm_predictive_weights(target_question, candidate_dict):
     weights_output = []
     total_weight = 0.0
     
-    print("\n--- LLM CAUSAL WEIGHTS ---")
     for item in result.basket:
         if item.weight > 0:
             title = candidate_dict.get(item.market_id, {}).get('question', 'Unknown')
-            print(f"[{item.weight:.4f}] {title[:60]}...")
-            print(f"    Reasoning: {item.reasoning}")
-            
             weights_output.append({
                 "title": title,
                 "market_id": item.market_id,

@@ -1,6 +1,6 @@
-import { useEffect, useState, useMemo } from 'react'
+import { useEffect, useState, useMemo, useRef } from 'react'
 import { Routes, Route, useNavigate, useLocation, useParams } from 'react-router-dom'
-import { ResponsiveContainer, AreaChart, Area, XAxis, YAxis, Tooltip, CartesianGrid } from 'recharts'
+import { ResponsiveContainer, AreaChart, Area, LineChart, Line, XAxis, YAxis, Tooltip, CartesianGrid } from 'recharts'
 
 function Section({ title, children, className = '' }) {
   return (
@@ -384,6 +384,7 @@ function SemanticResultsPage() {
   const location = useLocation()
   const navigate = useNavigate()
   const prompt = location.state?.prompt ?? null
+  const pipelineRef = useRef(null)
 
   const [matchedTags, setMatchedTags] = useState(null)
   const [tagBreakdowns, setTagBreakdowns] = useState({})
@@ -393,9 +394,15 @@ function SemanticResultsPage() {
   const [expandedTags, setExpandedTags] = useState({})
   const [error, setError] = useState(null)
   const [timings, setTimings] = useState({})
+  const [resultsCollapsed, setResultsCollapsed] = useState(false)
+  const [basketData, setBasketData] = useState(null)
+  const [basketLoading, setBasketLoading] = useState(false)
+  const [basketError, setBasketError] = useState(null)
 
   useEffect(() => {
     if (!prompt) return
+    setBasketData(null)
+    setBasketError(null)
     let cancelled = false
 
     async function runPipeline() {
@@ -475,6 +482,94 @@ function SemanticResultsPage() {
     return () => { cancelled = true }
   }, [prompt])
 
+  // Scroll results into view as pipeline progresses or completes
+  useEffect(() => {
+    if (pipelinePhase === 'idle' || !prompt) return
+    const el = pipelineRef.current
+    if (el) {
+      const t = setTimeout(() => el.scrollIntoView({ behavior: 'smooth', block: 'nearest' }), 100)
+      return () => clearTimeout(t)
+    }
+  }, [pipelinePhase, activeTagIdx, prompt])
+
+  // Collapse pipeline section when complete
+  useEffect(() => {
+    if (pipelinePhase === 'complete') setResultsCollapsed(true)
+  }, [pipelinePhase])
+
+  // After pipeline complete: fetch full semantic (events with best_market), then basket if text match > 70%
+  useEffect(() => {
+    if (pipelinePhase !== 'complete' || !prompt) return
+    let cancelled = false
+    setBasketLoading(true)
+    setBasketError(null)
+
+    async function fetchBasket() {
+      try {
+        const res = await fetch('/api/search/semantic', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ prompt, num_tags: 5, events_per_tag: 30 }),
+        })
+        if (cancelled) return
+        const data = await res.json()
+        if (!res.ok) {
+          setBasketError(data?.detail ?? 'Semantic search failed')
+          setBasketLoading(false)
+          return
+        }
+        const wordSearchMarkets = data.word_search_markets ?? []
+        const events = data.events ?? []
+        const best = wordSearchMarkets.length
+          ? wordSearchMarkets.reduce((a, b) => ((b.score ?? 0) > (a.score ?? 0) ? b : a), wordSearchMarkets[0])
+          : null
+        if (!best || (best.score ?? 0) <= 0.7) {
+          setBasketLoading(false)
+          return
+        }
+        // Use only best_market.id (same source as inputs) — match word-search best to an event’s best_market
+        // best.id is same field as best_market.id (backend resolves word-search ids via Gamma)
+        const targetMarketId = best.id
+        const excludeIds = new Set([targetMarketId, ...wordSearchMarkets.map((m) => m.id)])
+        const inputIds = events
+          .map((e) => e.best_market?.id)
+          .filter(Boolean)
+          .filter((id) => !excludeIds.has(id))
+          .slice(0, 10)
+        if (inputIds.length === 0) {
+          setBasketLoading(false)
+          return
+        }
+        console.log('Target market ID sent to backend:', targetMarketId)
+        const basketRes = await fetch('/api/basket', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            target_market_id: targetMarketId,
+            input_market_ids: inputIds,
+            days: 7,
+          }),
+        })
+        if (cancelled) return
+        const basketJson = await basketRes.json()
+        if (!basketRes.ok) {
+          setBasketError(basketJson?.detail ?? 'Basket failed')
+          setBasketLoading(false)
+          return
+        }
+        setBasketData(basketJson)
+      } catch (e) {
+        if (!cancelled) {
+          setBasketError(e.message ?? 'Request failed')
+        }
+      } finally {
+        if (!cancelled) setBasketLoading(false)
+      }
+    }
+    fetchBasket()
+    return () => { cancelled = true }
+  }, [pipelinePhase, prompt])
+
   if (!prompt) {
     return (
       <div className="min-h-screen bg-blue-50 flex flex-col items-center justify-center gap-4 px-4">
@@ -514,9 +609,36 @@ function SemanticResultsPage() {
           <p className="step-appear text-base text-red-600 mb-8">{error}</p>
         )}
 
-        {/* Pipeline spine */}
-        <div className="relative pl-8">
-          <div className="absolute left-0 top-1 bottom-0 w-px bg-black/10" />
+        {/* Pipeline: collapsible when complete */}
+        <div ref={pipelineRef}>
+          {pipelinePhase === 'complete' && (
+            <button
+              type="button"
+              onClick={() => setResultsCollapsed((c) => !c)}
+              className="w-full flex items-center justify-between gap-4 py-2 text-left"
+            >
+              <span className="text-sm text-black/70 truncate">
+                <span className="font-medium text-black">"{prompt}"</span>
+                {' — '}
+                <span className="text-black/50">{matchedTags?.length ?? 0} tags</span>
+                {' · '}
+                <span className="text-black/50">{totalEvents} events</span>
+                {' · '}
+                <span className="text-black/50">{wordMarkets?.length ?? 0} text matches</span>
+              </span>
+              <svg
+                className={`h-5 w-5 shrink-0 text-black/40 transition-transform duration-200 ${resultsCollapsed ? '' : 'rotate-180'}`}
+                fill="none"
+                stroke="currentColor"
+                viewBox="0 0 24 24"
+              >
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+              </svg>
+            </button>
+          )}
+          {(!resultsCollapsed || pipelinePhase !== 'complete') && (
+            <div className="relative pl-8">
+              <div className="absolute left-0 top-1 bottom-0 w-px bg-black/10" />
 
           {/* STEP 1 — Match tags */}
           <div className="relative mb-12">
@@ -668,7 +790,68 @@ function SemanticResultsPage() {
               </p>
             </div>
           )}
+            </div>
+          )}
         </div>
+
+        {/* Graph section: target vs synthetic time series */}
+        <div className="h-px bg-black/10 mt-12 mb-4" />
+        <section className="mb-8">
+          <h2 className="text-sm font-medium text-black/40 uppercase tracking-wider mb-4">
+            Target vs synthetic
+          </h2>
+          <div className="min-h-[280px] flex flex-col items-center justify-center">
+            {basketLoading && (
+              <p className="text-black/50 flex items-center gap-2">
+                <Spinner />
+                Loading basket and time series…
+              </p>
+            )}
+            {!basketLoading && basketError && (
+              <p className="text-red-600">{basketError}</p>
+            )}
+            {!basketLoading && !basketError && !basketData && (
+              <p className="text-black/50 text-center max-w-md">
+                If a search returns a strong text match (&gt;70%), the target market and synthetic basket time series will appear here.
+              </p>
+            )}
+            {!basketLoading && !basketError && basketData && (() => {
+              const ts = basketData.timestamps ?? []
+              const targetPrices = basketData.target_prices ?? []
+              const syntheticPrices = basketData.synthetic_prices ?? []
+              const chartData = ts.map((t, i) => {
+                const d = new Date(t)
+                return {
+                  date: `${d.getMonth() + 1}/${d.getDate()}`,
+                  target: Math.round((targetPrices[i] ?? 0) * 1000) / 10,
+                  synthetic: Math.round((syntheticPrices[i] ?? 0) * 1000) / 10,
+                }
+              })
+              return (
+                <div className="w-full">
+                  <p className="text-sm text-black/60 mb-2 truncate" title={basketData.target_question}>
+                    {basketData.target_question}
+                  </p>
+                  {basketData.r_squared != null && (
+                    <p className="text-xs text-black/40 mb-2">R² = {Number(basketData.r_squared).toFixed(4)}</p>
+                  )}
+                  <div className="w-full h-[260px]">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <LineChart data={chartData} margin={{ top: 8, right: 16, bottom: 8, left: 8 }}>
+                        <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
+                        <XAxis dataKey="date" tick={{ fontSize: 11 }} stroke="#9ca3af" />
+                        <YAxis domain={[0, 100]} tick={{ fontSize: 11 }} stroke="#9ca3af" tickFormatter={(v) => `${v}%`} />
+                        <Tooltip formatter={(v) => `${Number(v).toFixed(1)}%`} labelFormatter={(l) => l} />
+                        <Line type="monotone" dataKey="target" name="Target" stroke="#2563eb" strokeWidth={2} dot={false} />
+                        <Line type="monotone" dataKey="synthetic" name="Synthetic" stroke="#16a34a" strokeWidth={2} dot={false} />
+                      </LineChart>
+                    </ResponsiveContainer>
+                  </div>
+                </div>
+              )
+            })()}
+          </div>
+        </section>
       </div>
     </div>
   )
