@@ -10,6 +10,8 @@ import asyncio
 import logging
 import os
 import re
+import time
+from collections import OrderedDict
 from typing import Any
 
 import httpx
@@ -134,6 +136,11 @@ _PERSON_BLOCKLIST_LOWER: set[str] = {p.lower() for p in _PERSON_BLOCKLIST}
 
 _driver: AsyncDriver | None = None
 _nlp: Any = None  # spaCy model, loaded lazily
+
+# Related-by-paths cache: (key) -> (results, start_count, monotonic_timestamp)
+_RELATED_CACHE: OrderedDict[tuple, tuple[list[dict], int, float]] = OrderedDict()
+_RELATED_CACHE_TTL = 300   # seconds
+_RELATED_CACHE_MAX = 500   # max entries
 
 router = APIRouter(tags=["knowledge-graph"])
 
@@ -1111,6 +1118,197 @@ async def graph_stats() -> dict[str, Any]:
     return stats
 
 # ═══════════════════════════════════════════════════════════════════════════
+# Related-by-paths: resolve, subset filter, cache, aggregation
+# ═══════════════════════════════════════════════════════════════════════════
+
+_VALID_END_TYPES = frozenset({"Person", "Event", "Market", "Company"})
+_DEFAULT_END_TYPES = ("Company", "Event", "Market", "Person")
+
+
+async def _resolve_query_to_start_element_ids(
+    query: str, max_starts: int = 20,
+) -> list[str]:
+    """Return Neo4j elementIds for nodes matching *query* (full-text then CONTAINS)."""
+    driver = _get_driver()
+    async with driver.session() as session:
+        try:
+            result = await session.run(
+                "CALL db.index.fulltext.queryNodes('nodeSearch', $q) "
+                "YIELD node, score "
+                "RETURN elementId(node) AS eid "
+                "ORDER BY score DESC LIMIT $lim",
+                q=query, lim=max_starts,
+            )
+            data = await result.data()
+            if data:
+                return [r["eid"] for r in data]
+        except Exception:
+            pass
+        result = await session.run(
+            "MATCH (n) "
+            "WHERE n.name CONTAINS $q OR n.title CONTAINS $q "
+            "      OR n.label CONTAINS $q OR n.question CONTAINS $q "
+            "RETURN elementId(n) AS eid LIMIT $lim",
+            q=query, lim=max_starts,
+        )
+        return [r["eid"] for r in await result.data()]
+
+
+def _path_fails_subset_rule(node_names: list[str]) -> bool:
+    """True when the path is redundant: an earlier node's name is a non-empty
+    substring of a later node's name (case-insensitive), e.g.
+    ``["Elon", "Tesla", "Elon Musk"]`` fails because ``"elon"`` is in ``"elon musk"``."""
+    cleaned = [n.strip().lower() for n in node_names if n and n.strip()]
+    for i in range(len(cleaned)):
+        if len(cleaned[i]) < 2:
+            continue
+        for j in range(i + 1, len(cleaned)):
+            if len(cleaned[j]) < 2:
+                continue
+            if cleaned[i] != cleaned[j] and cleaned[i] in cleaned[j]:
+                return True
+    return False
+
+
+def _rbp_cache_key(
+    query: str, depth: int, limit: int,
+    end_types: tuple[str, ...], weight_by: str,
+) -> tuple:
+    return (query.strip().lower(), depth, limit, end_types, weight_by)
+
+
+def _rbp_cache_get(key: tuple) -> tuple[list[dict], int] | None:
+    if key in _RELATED_CACHE:
+        results, start_count, ts = _RELATED_CACHE[key]
+        if time.monotonic() - ts < _RELATED_CACHE_TTL:
+            _RELATED_CACHE.move_to_end(key)
+            return results, start_count
+        del _RELATED_CACHE[key]
+    return None
+
+
+def _rbp_cache_put(key: tuple, results: list[dict], start_count: int) -> None:
+    _RELATED_CACHE[key] = (results, start_count, time.monotonic())
+    _RELATED_CACHE.move_to_end(key)
+    while len(_RELATED_CACHE) > _RELATED_CACHE_MAX:
+        _RELATED_CACHE.popitem(last=False)
+
+
+async def find_related_by_paths(
+    query: str,
+    max_depth: int = 4,
+    limit: int = 10,
+    end_types: tuple[str, ...] = _DEFAULT_END_TYPES,
+    weight_by: str = "count",
+) -> tuple[list[dict], int, bool]:
+    """Top-N Person/Event/Market/Company nodes most related to *query* by
+    counting (or length-weighting) distinct graph paths.
+
+    Returns ``(results, start_nodes_matched, cached)``.
+    """
+    depth = min(max_depth, 6)
+    et = tuple(sorted(t for t in end_types if t in _VALID_END_TYPES))
+    if not et:
+        et = _DEFAULT_END_TYPES
+
+    ck = _rbp_cache_key(query, depth, limit, et, weight_by)
+    hit = _rbp_cache_get(ck)
+    if hit is not None:
+        return hit[0], hit[1], True
+
+    start_ids = await _resolve_query_to_start_element_ids(query)
+    if not start_ids:
+        return [], 0, False
+
+    driver = _get_driver()
+    label_filter = " OR ".join(f"end:{lbl}" for lbl in et)
+    cypher = (
+        "MATCH (start) WHERE elementId(start) IN $start_ids "
+        f"MATCH path = (start)-[*1..{depth}]-(end) "
+        f"WHERE ({label_filter}) "
+        "  AND end <> start "
+        "  AND none(n IN nodes(path) WHERE n:DataSource) "
+        "RETURN "
+        "  [n IN nodes(path) | coalesce(n.name, n.title, n.label, "
+        "       n.question, n.slug, '')] AS node_names, "
+        "  length(path) AS path_length, "
+        "  elementId(end) AS end_id, "
+        "  labels(end) AS end_labels, "
+        "  coalesce(end.name, end.title, end.question, end.label, "
+        "           end.slug) AS end_name, "
+        "  coalesce(end.poly_id, end.slug, end.name) AS end_ext_id, "
+        "  end.description AS end_description "
+        "LIMIT 2000"
+    )
+    async with driver.session() as session:
+        result = await session.run(cypher, start_ids=start_ids)
+        raw_paths = await result.data()
+
+    # Filter by subset rule, then aggregate per destination node
+    agg: dict[str, dict] = {}
+    for row in raw_paths:
+        if _path_fails_subset_rule(row["node_names"]):
+            continue
+
+        end_id = row["end_id"]
+        path_len = row["path_length"]
+
+        if end_id not in agg:
+            end_labels = row["end_labels"]
+            node_type = "Unknown"
+            for lbl in ("Person", "Event", "Market", "Company"):
+                if lbl in end_labels:
+                    node_type = lbl
+                    break
+            agg[end_id] = {
+                "type": node_type,
+                "name": row["end_name"],
+                "id": row["end_ext_id"],
+                "description": (row.get("end_description") or "")[:200],
+                "path_count": 0,
+                "weighted_score": 0.0,
+                "min_path_length": path_len,
+            }
+
+        entry = agg[end_id]
+        entry["path_count"] += 1
+        entry["weighted_score"] += 1.0 / (1.0 + path_len)
+        if path_len < entry["min_path_length"]:
+            entry["min_path_length"] = path_len
+
+    if weight_by == "length":
+        sorted_items = sorted(
+            agg.values(), key=lambda x: x["weighted_score"], reverse=True,
+        )
+    else:
+        sorted_items = sorted(
+            agg.values(), key=lambda x: x["path_count"], reverse=True,
+        )
+
+    results: list[dict] = []
+    for item in sorted_items[:limit]:
+        score = (
+            round(item["weighted_score"], 4)
+            if weight_by == "length"
+            else float(item["path_count"])
+        )
+        results.append({
+            "type": item["type"],
+            "name": item["name"],
+            "id": item["id"],
+            "description": item["description"],
+            "connection_score": score,
+            "path_count": item["path_count"],
+            "min_path_length": item["min_path_length"],
+        })
+
+    if limit <= 20 and depth <= 5:
+        _rbp_cache_put(ck, results, len(start_ids))
+
+    return results, len(start_ids), False
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # FastAPI endpoints (mounted via router)
 # ═══════════════════════════════════════════════════════════════════════════
 
@@ -1151,6 +1349,23 @@ class PostprocessResponse(BaseModel):
     merged_companies: int = 0
     errors: list[str] = []
     apoc_used: bool = False
+
+
+class RelatedByPathsItem(BaseModel):
+    type: str
+    name: str
+    id: str
+    description: str = ""
+    connection_score: float
+    path_count: int
+    min_path_length: int
+
+
+class RelatedByPathsResponse(BaseModel):
+    query: str
+    results: list[RelatedByPathsItem] = []
+    start_nodes_matched: int = 0
+    cached: bool = False
 
 
 @router.post("/ingest", response_model=IngestResponse)

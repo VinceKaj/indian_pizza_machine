@@ -920,17 +920,54 @@ function HomePage() {
         </nav>
       </header>
 
+      <div className="bg-blue-700 text-white" style={{ backgroundColor: '#1d4ed8' }}>
+        <div className="flex items-center gap-4 overflow-hidden py-3">
+          <div className="flex shrink-0 items-center gap-2 px-4">
+            <span className="flex h-6 w-6 items-center justify-center bg-white/20 text-white">
+              <svg className="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6" />
+              </svg>
+            </span>
+            <span className="text-sm font-medium text-white">Trending</span>
+          </div>
+          <div className="ticker-wrap flex-1 overflow-hidden">
+            <div className="ticker flex gap-8 whitespace-nowrap">
+              {['Election market: Trump vs Harris odds shift after debate.', 'Fed rate market: June cut probability at 72%.', 'Related market: Crypto ETF approval moves correlation markets.'].map((headline, i) => (
+                <span key={i} className="text-sm text-white">{headline}</span>
+              ))}
+              {['Election market: Trump vs Harris odds shift after debate.', 'Fed rate market: June cut probability at 72%.', 'Related market: Crypto ETF approval moves correlation markets.'].map((headline, i) => (
+                <span key={`dup-${i}`} className="text-sm text-white">{headline}</span>
+              ))}
+            </div>
+          </div>
+          <button type="button" className="shrink-0 bg-white/20 px-4 py-1.5 text-sm font-medium text-white hover:bg-white/30">All news</button>
+        </div>
+      </div>
+
       <main className="relative flex flex-col flex-1 min-w-0">
-        <section className="flex min-h-[50vh] flex-col justify-center bg-blue-700 px-2 py-12 md:px-3">
-          <div className="mx-auto w-full max-w-7xl">
-            <h1 className="text-4xl font-bold tracking-tight text-white md:text-5xl">Trade like an insider.</h1>
-            <p className="mt-3 text-lg text-white/90">Find related markets and arbitrage from causality.</p>
+        <section className="hero-gradient-drift flex min-h-[70vh] flex-col justify-center px-2 py-12 md:px-3">
+          <div className="relative z-10 mx-auto w-full max-w-7xl">
+            <h1 className="text-4xl font-bold tracking-tight text-white md:text-5xl">Find markets</h1>
+            <p className="mt-3 text-lg text-white/90">Build your own personalised prediction ETF</p>
             <form className="mt-8 max-w-2xl" onSubmit={handleSearchSubmit}>
-              <div className="flex w-full border-0 bg-white pl-3 pr-4 md:pl-4">
+              <div className="group relative flex w-full items-center border-0 pl-4 pr-4 md:pl-4">
+                <div
+                  className="pointer-events-none absolute inset-0 z-0"
+                  style={{
+                    background: 'linear-gradient(90deg, transparent 0%, rgba(255,255,255,0.12) 10%, rgba(255,255,255,0.25) 22%, rgba(255,255,255,0.25) 78%, rgba(255,255,255,0.12) 90%, transparent 100%)',
+                  }}
+                />
+                <div className="pointer-events-none absolute inset-0 z-0 bg-white/50 opacity-0 transition-opacity duration-300 group-focus-within:opacity-100" />
+                <span className="relative z-10 flex shrink-0 text-white/90" aria-hidden>
+                  <svg className="h-6 w-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+                  </svg>
+                </span>
                 <input
                   type="search"
-                  placeholder="Search anything or paste a Polymarket URL…"
-                  className="search-input w-full border-0 bg-transparent py-4 pr-4 pl-0 text-black placeholder-gray-500 outline-none"
+                  placeholder=""
+                  aria-label="Search"
+                  className="search-input relative z-10 w-full border-0 bg-transparent py-4 pl-3 pr-4 text-white placeholder-transparent outline-none"
                   value={searchValue}
                   onChange={(e) => setSearchValue(e.target.value)}
                   disabled={loading}
@@ -992,30 +1029,6 @@ function HomePage() {
           </div>
         </div>
       </main>
-
-      <footer className="bg-blue-700 text-white" style={{ backgroundColor: '#1d4ed8' }}>
-        <div className="flex items-center gap-4 overflow-hidden py-3">
-          <div className="flex shrink-0 items-center gap-2 px-4">
-            <span className="flex h-6 w-6 items-center justify-center bg-white/20 text-white">
-              <svg className="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6" />
-              </svg>
-            </span>
-            <span className="text-sm font-medium text-white">Trending</span>
-          </div>
-          <div className="ticker-wrap flex-1 overflow-hidden">
-            <div className="ticker flex gap-8 whitespace-nowrap">
-              {['Election market: Trump vs Harris odds shift after debate.', 'Fed rate market: June cut probability at 72%.', 'Related market: Crypto ETF approval moves correlation markets.'].map((headline, i) => (
-                <span key={i} className="text-sm text-white">{headline}</span>
-              ))}
-              {['Election market: Trump vs Harris odds shift after debate.', 'Fed rate market: June cut probability at 72%.', 'Related market: Crypto ETF approval moves correlation markets.'].map((headline, i) => (
-                <span key={`dup-${i}`} className="text-sm text-white">{headline}</span>
-              ))}
-            </div>
-          </div>
-          <button type="button" className="shrink-0 bg-white/20 px-4 py-1.5 text-sm font-medium text-white hover:bg-white/30">All news</button>
-        </div>
-      </footer>
     </div>
   )
 }

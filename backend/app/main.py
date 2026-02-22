@@ -10,7 +10,7 @@ import json
 import logging
 import math
 
-logging.basicConfig(level=logging.WARNING)
+logging.basicConfig(level=logging.INFO)
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -36,12 +36,14 @@ try:
         find_indirect_datasources,
         search_nodes,
         graph_stats,
+        find_related_by_paths,
         IngestResponse,
         TraverseResponse,
         DatasourceResponse,
         SearchResponse,
         StatsResponse,
         PostprocessResponse,
+        RelatedByPathsResponse,
     )
     _graph_available = True
 except Exception as _graph_err:
@@ -127,6 +129,19 @@ class WordSearchMarket(BaseModel):
     id: str
     question: str
     score: float | None = None
+
+
+class BestMarketMatchRequest(BaseModel):
+    """Request body for the single best-matching market by embedding."""
+
+    prompt: str = Field(..., min_length=1, description="User prompt to match against market questions")
+
+
+class BestMarketMatchResponse(BaseModel):
+    """The single market whose question embedding is closest to the prompt, and its score."""
+
+    market: BestMarketSummary | None = None
+    match_score: float = 0.0
 
 
 class TagBreakdown(BaseModel):
@@ -448,7 +463,7 @@ async def _word_search_markets(
     try:
         r = await client.get(
             f"{GAMMA_API_BASE}/public-search",
-            params={"q": query[:200], "limit_per_type": 10},
+            params={"q": query[:200], "limit_per_type": 10, "keep_closed_markets": 0},
             timeout=10.0,
         )
         r.raise_for_status()
@@ -461,6 +476,8 @@ async def _word_search_markets(
             for m in ev.get("markets") or []:
                 if len(out) >= top_n:
                     return out
+                if m.get("closed") is True or m.get("active") is False:
+                    continue
                 mid = str(m.get("id", ""))
                 q = m.get("question") or m.get("questionTitle") or ""
                 if mid and mid not in seen_ids:
@@ -600,6 +617,36 @@ async def word_search(body: WordSearchRequest) -> WordSearchResponse:
             m.score = round(float(q_scores[i]), 5)
 
     return WordSearchResponse(markets=markets)
+
+
+@app.post("/api/search/semantic/best-market", response_model=BestMarketMatchResponse)
+async def best_market_match(body: BestMarketMatchRequest) -> BestMarketMatchResponse:
+    """
+    Return the single Polymarket market whose question most closely matches the prompt
+    by embedding similarity. Only open/active markets are considered (closed markets filtered out).
+    """
+    if _model is None:
+        raise HTTPException(status_code=503, detail="Embedding model not loaded yet")
+
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        candidates = await _word_search_markets(client, body.prompt, top_n=80)
+
+    if not candidates:
+        return BestMarketMatchResponse(market=None, match_score=0.0)
+
+    loop = asyncio.get_running_loop()
+    prompt_emb = await loop.run_in_executor(None, _model.encode, body.prompt)
+    questions = [m.question for m in candidates]
+    q_emb = await loop.run_in_executor(None, _model.encode, questions)
+    q_scores = _cosine_similarity(prompt_emb, np.asarray(q_emb, dtype=np.float32))
+    best_idx = int(np.argmax(q_scores))
+    best = candidates[best_idx]
+    score = round(float(q_scores[best_idx]), 5)
+
+    return BestMarketMatchResponse(
+        market=BestMarketSummary(id=best.id, question=best.question),
+        match_score=score,
+    )
 
 
 @app.post("/api/search/semantic", response_model=SemanticSearchResponse)
@@ -773,7 +820,6 @@ async def semantic_search(body: SemanticSearchRequest) -> SemanticSearchResponse
             best_m.get("conditionId"),
         )
         logger.info("[best_market] Full target market object: %s", json.dumps({k: v for k, v in best_m.items() if k not in ("description", "resolutionSource")}, default=str))
-        # Use the market id from the market object (nested in event.markets[]); Gamma expects this for GET /markets/{id}
         market_id = best_m.get("id") or best_m.get("market_id")
         if market_id is not None:
             market_id = str(market_id)
@@ -796,7 +842,6 @@ async def semantic_search(body: SemanticSearchRequest) -> SemanticSearchResponse
         out_events, word_search_markets = await asyncio.gather(
             out_events_task, word_search_task
         )
-        # Resolve word-search market ids to the same field as best_market.id (Gamma market id)
         for wm in word_search_markets:
             if not wm.id:
                 continue
@@ -907,6 +952,52 @@ if _graph_available:
         s = await graph_stats()
         return StatsResponse(**s)
 
+    _END_TYPE_MAP = {
+        "person": "Person", "event": "Event",
+        "market": "Market", "company": "Company",
+    }
+
+    @app.get(
+        "/api/graph/related-by-paths",
+        response_model=RelatedByPathsResponse,
+        tags=["Knowledge graph"],
+    )
+    async def api_graph_related_by_paths(
+        q: str = Query(..., min_length=1, description="Search query"),
+        depth: int = Query(4, ge=1, le=6, description="Max traversal hops"),
+        limit: int = Query(10, ge=1, le=50, description="Max results"),
+        end_types: str = Query(
+            "person,event,company,market",
+            description="Comma-separated destination types: person, event, company, market",
+        ),
+        weight_by: str = Query(
+            "count",
+            description="Scoring method: 'count' (raw path count) or 'length' (shorter paths weigh more)",
+        ),
+    ) -> RelatedByPathsResponse:
+        """Find the top-N persons, events, markets, or companies most related
+        to a query term by counting distinct graph paths."""
+        parsed_types = tuple(
+            _END_TYPE_MAP[t]
+            for t in (s.strip().lower() for s in end_types.split(","))
+            if t in _END_TYPE_MAP
+        )
+        if weight_by not in ("count", "length"):
+            weight_by = "count"
+        results, start_count, cached = await find_related_by_paths(
+            query=q,
+            max_depth=depth,
+            limit=limit,
+            end_types=parsed_types or ("Person", "Event", "Market", "Company"),
+            weight_by=weight_by,
+        )
+        return RelatedByPathsResponse(
+            query=q,
+            results=results,
+            start_nodes_matched=start_count,
+            cached=cached,
+        )
+
 
 class BasketRequest(BaseModel):
     target_market_id: str
@@ -940,6 +1031,13 @@ async def create_basket(request: BasketRequest) -> dict[str, Any]:
             "target_question": str
         }
     """
+    logger.info(
+        "basket request: target_market_id=%s input_market_ids=%s",
+        request.target_market_id,
+        request.input_market_ids,
+    )
+    print("[basket] target_market_id:", request.target_market_id)
+    print("[basket] input_market_ids:", request.input_market_ids)
     try:
         result = build_synthetic_basket(
             target_market_id=request.target_market_id,
@@ -987,6 +1085,8 @@ async def create_basket_no_target_endpoint(request: BasketNoTargetRequest) -> di
             "temperature": float
         }
     """
+    logger.info("basket-no-target request: input_market_ids=%s", request.input_market_ids)
+    print("[basket-no-target] input_market_ids:", request.input_market_ids)
     try:
         result = build_basket_no_target(
             input_market_ids=request.input_market_ids,
@@ -1024,6 +1124,8 @@ async def create_basket_llm_no_target_endpoint(request: BasketLLMNoTargetRequest
             "total_markets": int
         }
     """
+    logger.info("basket-llm-no-target request: input_market_ids=%s", request.input_market_ids)
+    print("[basket-llm-no-target] input_market_ids:", request.input_market_ids)
     try:
         result = build_basket_llm_no_target(
             input_market_ids=request.input_market_ids,

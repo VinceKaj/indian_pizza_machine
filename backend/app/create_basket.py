@@ -173,10 +173,15 @@ def build_synthetic_basket(target_market_id, input_market_ids, days=7, verbose=F
         resampled.name = series.name
         input_resampled_list.append(resampled)
     
-    # Concat on same time grid
-    df = pd.concat([target_resampled] + input_resampled_list, axis=1, sort=True)
-    df = df.ffill()
-    df = df.dropna()
+    # Align to target's index so we keep every target observation
+    idx = target_resampled.index
+    input_aligned = [
+        s.reindex(idx).ffill().bfill()
+        for s in input_resampled_list
+    ]
+    df = pd.concat([target_resampled] + input_aligned, axis=1)
+    df = df.dropna(subset=['Target'])
+    df = df.fillna(0.0)
     
     logger.info(f"After alignment: {len(df)} hourly observations")
     
