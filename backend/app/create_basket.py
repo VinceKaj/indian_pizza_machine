@@ -119,7 +119,8 @@ def build_synthetic_basket(target_market_id, input_market_ids, days=7, verbose=F
     logger.info(f"Successfully fetched {len(candidate_dict)}/{len(input_market_ids)} candidate markets")
     
     # Apply semantic filtering if enabled
-    if use_semantic_filter and len(candidate_dict) > top_k_semantic:
+    # if use_semantic_filter and len(candidate_dict) > top_k_semantic:
+    if use_semantic_filter and len(candidate_dict) > 2:
         filtered_market_ids = filter_by_semantic_similarity(
             target_question, 
             candidate_dict, 
