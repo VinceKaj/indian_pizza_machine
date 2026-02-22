@@ -27,7 +27,7 @@ def get_semantic_model():
 
 def filter_by_semantic_similarity(target_question, candidate_dict, top_k=10, 
                                   min_similarity=0.4, max_pairwise_similarity=0.85, 
-                                  verbose=False, target_description="", max_target_similarity=0.95):
+                                  verbose=False, target_description="", max_target_similarity=1):
     """
     Filter candidate markets by semantic similarity to target question, 
     while forcing diversity by excluding highly redundant markets.

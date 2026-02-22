@@ -1006,7 +1006,7 @@ class BasketRequest(BaseModel):
     use_semantic_filter: bool = True
     top_k_semantic: int = 10
     min_similarity: float = 0.4
-    max_target_similarity: float = 0.95
+    max_target_similarity: float = 1
 
 
 @app.post("/api/basket")
