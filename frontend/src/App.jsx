@@ -1300,49 +1300,46 @@ function SemanticResultsPage() {
                   </p>
                 )}
                 {!basketLoading && !basketError && basketData && (() => {
-                  if (basketData.noTarget) {
-                    return (
-                      <div className="w-full flex flex-col items-start transition-all duration-300 ease-out">
-                        <p className="text-base text-black/60 mb-2 truncate max-w-full" title={basketData.target_question}>
-                          {basketData.target_question}
-                        </p>
-                        <p className="text-sm text-black/40 mb-3">
-                          No single target market matched strongly; basket built from semantic similarity. Weights below.
-                        </p>
-                      </div>
-                    )
-                  }
                   const ts = basketData.timestamps ?? []
                   const targetPrices = basketData.target_prices ?? []
                   const syntheticPrices = basketData.synthetic_prices ?? []
-                  const chartData = ts.map((t, i) => {
+                  const noTarget = basketData.noTarget === true
+                  const hasSeries = ts.length > 0 && (noTarget ? syntheticPrices.length > 0 : targetPrices.length > 0 && syntheticPrices.length > 0)
+                  const chartData = hasSeries ? ts.map((t, i) => {
                     const d = new Date(t)
                     return {
                       date: `${d.getMonth() + 1}/${d.getDate()}`,
-                      target: Math.round((targetPrices[i] ?? 0) * 1000) / 10,
+                      ...(noTarget ? {} : { target: Math.round((targetPrices[i] ?? 0) * 1000) / 10 }),
                       synthetic: Math.round((syntheticPrices[i] ?? 0) * 1000) / 10,
                     }
-                  })
+                  }) : []
                   return (
                     <div className="w-full flex flex-col items-start transition-all duration-300 ease-out">
                       <p className="text-base text-black/60 mb-2 truncate max-w-full" title={basketData.target_question}>
                         {basketData.target_question}
                       </p>
-                      {basketData.r_squared != null && (
+                      {noTarget && (
+                        <p className="text-sm text-black/40 mb-3">
+                          No single target market matched strongly; basket built from semantic similarity. Weights below.
+                        </p>
+                      )}
+                      {!noTarget && basketData.r_squared != null && (
                         <p className="text-sm text-black/40 mb-3">R² = {Number(basketData.r_squared).toFixed(4)}</p>
                       )}
-                      <div className="w-full h-[420px] transition-all duration-300 ease-out">
-                        <ResponsiveContainer width="100%" height="100%">
-                          <LineChart data={chartData} margin={{ top: 8, right: 16, bottom: 8, left: 8 }}>
-                            <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
-                            <XAxis dataKey="date" tick={{ fontSize: 13 }} stroke="#9ca3af" />
-                            <YAxis domain={[0, 100]} tick={{ fontSize: 13 }} stroke="#9ca3af" tickFormatter={(v) => `${v}%`} />
-                            <Tooltip formatter={(v) => `${Number(v).toFixed(1)}%`} labelFormatter={(l) => l} />
-                            <Line type="monotone" dataKey="target" name="Target" stroke="#2563eb" strokeWidth={2} dot={false} />
-                            <Line type="monotone" dataKey="synthetic" name="Synthetic" stroke="#16a34a" strokeWidth={2} dot={false} />
-                          </LineChart>
-                        </ResponsiveContainer>
-                      </div>
+                      {chartData.length > 0 && (
+                        <div className="w-full h-[420px] transition-all duration-300 ease-out">
+                          <ResponsiveContainer width="100%" height="100%">
+                            <LineChart data={chartData} margin={{ top: 8, right: 16, bottom: 8, left: 8 }}>
+                              <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
+                              <XAxis dataKey="date" tick={{ fontSize: 13 }} stroke="#9ca3af" />
+                              <YAxis domain={[0, 100]} tick={{ fontSize: 13 }} stroke="#9ca3af" tickFormatter={(v) => `${v}%`} />
+                              <Tooltip formatter={(v) => `${Number(v).toFixed(1)}%`} labelFormatter={(l) => l} />
+                              {!noTarget && <Line type="monotone" dataKey="target" name="Target" stroke="#2563eb" strokeWidth={2} dot={false} />}
+                              <Line type="monotone" dataKey="synthetic" name="Synthetic" stroke="#16a34a" strokeWidth={2} dot={false} />
+                            </LineChart>
+                          </ResponsiveContainer>
+                        </div>
+                      )}
                     </div>
                   )
                 })()}

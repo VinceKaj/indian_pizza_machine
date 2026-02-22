@@ -1,12 +1,14 @@
 """
 Create a basket without a target market.
 Uses high-fidelity semantic similarity (Title + Description) and softmax weighting.
+Returns weights plus a synthetic time series (weighted sum of input price histories).
 """
 import pandas as pd
 import numpy as np
 import requests
 import logging
 import torch
+from datetime import datetime, timedelta
 
 # Assuming get_semantic_model now loads BAAI/bge-large-en-v1.5
 from app.filter_inputs import get_semantic_model
@@ -40,6 +42,28 @@ def get_clob_token_ids(market_id):
         raise ValueError(f"Market {market_id} doesn't have CLOB token IDs")
     
     return clob_ids[0], clob_ids[1], data.get('question', 'Unknown'), data.get('description', '')
+
+
+def fetch_historical_prices(clob_token_id, start_ts, end_ts):
+    """Fetch historical prices from Polymarket CLOB. Returns a pandas Series with datetime index."""
+    url = "https://clob.polymarket.com/prices-history"
+    params = {
+        "market": clob_token_id,
+        "startTs": int(start_ts),
+        "endTs": int(end_ts),
+        "fidelity": 60,
+    }
+    response = requests.get(url, params=params, timeout=15)
+    data = response.json().get("history", [])
+    if not data:
+        return pd.Series(dtype=float, index=pd.DatetimeIndex([]))
+    df = pd.DataFrame(data)
+    df["datetime"] = pd.to_datetime(df["t"], unit="s")
+    df.set_index("datetime", inplace=True)
+    s = df["p"].astype(float)
+    if not isinstance(s.index, pd.DatetimeIndex):
+        s.index = pd.to_datetime(s.index)
+    return s
 
 
 def apply_diversity_filter(candidate_dict, top_k=10, max_pairwise_similarity=0.85):
@@ -199,10 +223,44 @@ def build_basket_no_target(input_market_ids, top_k=10, temperature=0.1,
         }
         for i, mid in enumerate(selected_market_ids)
     ]
-    
+
+    # Build synthetic time series: fetch price histories, align, weighted sum
+    timestamps = []
+    synthetic_prices = []
+    try:
+        end_date = datetime.now()
+        start_date = end_date - timedelta(days=7)
+        start_ts = start_date.timestamp()
+        end_ts = end_date.timestamp()
+        series_list = []
+        for mid in selected_market_ids:
+            try:
+                clob_yes, _, _, _ = get_clob_token_ids(mid)
+                s = fetch_historical_prices(clob_yes, start_ts, end_ts)
+                if not s.empty:
+                    s = s.copy()
+                    if not isinstance(s.index, pd.DatetimeIndex):
+                        s.index = pd.to_datetime(s.index)
+                    series_list.append(s.resample('1h').last().ffill())
+            except Exception as e:
+                logger.warning("No price history for market %s: %s", mid, e)
+        if series_list:
+            # Concat (aligns to union of indices)
+            df = pd.concat(series_list, axis=1)
+            df = df.dropna(how='all').ffill().bfill().fillna(0.0)
+            if not df.empty:
+                synthetic = (df.values @ weights).flatten()
+                timestamps = [ts.isoformat() for ts in df.index]
+                synthetic_prices = synthetic.tolist()
+                logger.info("Synthetic time series: %d points", len(timestamps))
+    except Exception as e:
+        logger.warning("Could not build synthetic time series: %s", e)
+
     return {
         'weights': weights_output,
         'total_markets': len(selected_market_ids),
         'centroid_question': centroid_question,
-        'temperature': temperature
+        'temperature': temperature,
+        'timestamps': timestamps,
+        'synthetic_prices': synthetic_prices,
     }
