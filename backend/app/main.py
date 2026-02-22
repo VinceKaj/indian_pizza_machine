@@ -9,11 +9,18 @@ import asyncio
 import json
 import logging
 import math
+import os
+from pathlib import Path
+
+from dotenv import load_dotenv
+
+# Load .env from backend directory so NYTIMES_API_KEY etc. are available
+_env_path = Path(__file__).resolve().parent.parent / ".env"
+load_dotenv(_env_path)
 
 logging.basicConfig(level=logging.INFO)
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
-from pathlib import Path
+from datetime import datetime, timedelta, timezone
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
@@ -37,6 +44,7 @@ try:
         search_nodes,
         graph_stats,
         find_related_by_paths,
+        find_bfs_layers,
         IngestResponse,
         TraverseResponse,
         DatasourceResponse,
@@ -44,6 +52,7 @@ try:
         StatsResponse,
         PostprocessResponse,
         RelatedByPathsResponse,
+        BFSLayersResponse,
     )
     _graph_available = True
 except Exception as _graph_err:
@@ -400,21 +409,43 @@ async def get_polymarket_info(url: str = Query(..., description="Full Polymarket
     raise HTTPException(status_code=404, detail="No market or event found for this URL")
 
 
+def _prices_history_params(market: str, interval: str) -> dict[str, Any]:
+    """Build query params for CLOB prices-history. Use startTs/endTs for 1w and max to avoid 400s."""
+    market = market.strip()
+    now = datetime.now(timezone.utc)
+    end_ts = int(now.timestamp())
+    # fidelity=60 (1-hour buckets) keeps response size bounded and avoids 400 on some markets
+    if interval == "1w":
+        start = now - timedelta(days=7)
+        return {"market": market, "startTs": int(start.timestamp()), "endTs": end_ts, "fidelity": 60}
+    if interval == "max":
+        start = now - timedelta(days=30)
+        return {"market": market, "startTs": int(start.timestamp()), "endTs": end_ts, "fidelity": 60}
+    return {"market": market, "interval": interval}
+
+
 @app.get("/api/polymarket/prices-history")
 async def get_prices_history(
     market: str = Query(..., description="CLOB token id (asset id) for the market"),
-    interval: str = Query("1d", description="Aggregation: max, all, 1m, 1w, 1d, 6h, 1h"),
+    interval: str = Query("1d", description="Aggregation: max, 1w, 1d, 6h, 1h"),
 ) -> Any:
     """
     Proxy to Polymarket CLOB prices-history. Pass the market (token id) from
     event market clobTokenIds (e.g. first id for Yes outcome).
+    For 1w and max we use startTs/endTs first; on 400 we fall back to interval param.
     """
     async with httpx.AsyncClient(timeout=20.0) as client:
         try:
+            params = _prices_history_params(market, interval)
             r = await client.get(
                 f"{CLOB_API_BASE}/prices-history",
-                params={"market": market.strip(), "interval": interval},
+                params=params,
             )
+            if r.status_code == 400 and interval in ("1w", "max"):
+                r = await client.get(
+                    f"{CLOB_API_BASE}/prices-history",
+                    params={"market": market.strip(), "interval": interval},
+                )
             r.raise_for_status()
             return r.json()
         except httpx.HTTPStatusError as e:
@@ -997,6 +1028,147 @@ if _graph_available:
             start_nodes_matched=start_count,
             cached=cached,
         )
+
+    @app.get(
+        "/api/graph/bfs-layers",
+        response_model=BFSLayersResponse,
+        tags=["Knowledge graph"],
+    )
+    async def api_graph_bfs_layers(
+        q: str = Query(..., min_length=1, description="Search query"),
+        max_depth: int = Query(4, ge=1, le=6, description="Max BFS depth (layers)"),
+    ) -> BFSLayersResponse:
+        """BFS from nodes matching query, returning cumulative layers for
+        animated graph visualization."""
+        result = await find_bfs_layers(query=q, max_depth=max_depth)
+        return BFSLayersResponse(**result)
+
+    # In-memory cache for NY Times Top Stories (minimize API calls; keyed by section)
+    _nytimes_cache: dict[str, tuple[list[dict[str, Any]], float]] = {}
+    NYTIMES_CACHE_TTL_SEC = 60 * 15  # 15 minutes
+
+    # NY Times Top Stories proxy (hides API key, avoids CORS)
+    @app.get("/api/nytimes/top-stories", tags=["News"])
+    async def api_nytimes_top_stories(
+        section: str = Query("home", description="Section: home, world, business, technology, etc."),
+    ) -> list[dict[str, Any]]:
+        """Proxy to NY Times Top Stories API. Returns up to 4 articles. Cached 15 min per section."""
+        import time
+        now = time.monotonic()
+        section = (section or "home").strip().lower() or "home"
+        if section in _nytimes_cache:
+            cached_list, ts = _nytimes_cache[section]
+            if now - ts < NYTIMES_CACHE_TTL_SEC:
+                return cached_list[:4]
+            del _nytimes_cache[section]
+        api_key = os.getenv("NYTIMES_API_KEY") or os.getenv("VITE_NYTIMES_API_KEY")
+        if not api_key:
+            logger.warning("NYTIMES_API_KEY not set; returning empty list")
+            return []
+        url = f"https://api.nytimes.com/svc/topstories/v2/{section}.json"
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                r = await client.get(url, params={"api-key": api_key})
+                r.raise_for_status()
+                data = r.json()
+        except Exception as e:
+            logger.exception("NY Times API request failed: %s", e)
+            raise HTTPException(status_code=502, detail="News feed temporarily unavailable")
+        results = data.get("results") or []
+        out = []
+        for i, a in enumerate(results):
+            img = None
+            if a.get("multimedia"):
+                for m in a["multimedia"]:
+                    if m.get("format") == "Large Thumbnail" or m.get("subtype") == "thumbnail":
+                        img = m.get("url")
+                        if img and not img.startswith("http"):
+                            img = "https://static01.nyt.com/" + img
+                        break
+                if not img and a["multimedia"]:
+                    u = a["multimedia"][-1].get("url")
+                    if u:
+                        img = u if u.startswith("http") else "https://static01.nyt.com/" + u
+            out.append({
+                "id": a.get("uri") or f"nyt-{i}",
+                "title": a.get("title") or "Untitled",
+                "abstract": a.get("abstract"),
+                "url": a.get("url"),
+                "section": a.get("section"),
+                "byline": a.get("byline"),
+                "published_date": a.get("published_date"),
+                "image_url": img,
+            })
+        _nytimes_cache[section] = (out, now)
+        return out[:4]
+
+    # In-memory cache for NY Times Article Search (keyed by normalized query)
+    _nytimes_search_cache: dict[str, tuple[list[dict[str, Any]], float]] = {}
+
+    @app.get("/api/nytimes/search", tags=["News"])
+    async def api_nytimes_search(
+        q: str = Query(..., min_length=1, description="Search query (e.g. topic or event title)"),
+    ) -> list[dict[str, Any]]:
+        """Search NY Times articles by query. Returns up to 4 articles. Cached 15 min per query."""
+        import time
+        now = time.monotonic()
+        query_key = (q or "").strip().lower()[:200] or "news"
+        if query_key in _nytimes_search_cache:
+            cached_list, ts = _nytimes_search_cache[query_key]
+            if now - ts < NYTIMES_CACHE_TTL_SEC:
+                return cached_list[:4]
+            del _nytimes_search_cache[query_key]
+        api_key = os.getenv("NYTIMES_API_KEY") or os.getenv("VITE_NYTIMES_API_KEY")
+        if not api_key:
+            logger.warning("NYTIMES_API_KEY not set; returning empty list")
+            return []
+        url = "https://api.nytimes.com/svc/search/v2/articlesearch.json"
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                r = await client.get(url, params={"api-key": api_key, "q": q.strip(), "page": 0})
+                r.raise_for_status()
+                data = r.json()
+        except Exception as e:
+            logger.exception("NY Times Article Search failed: %s", e)
+            raise HTTPException(status_code=502, detail="News search temporarily unavailable")
+        docs = (data.get("response") or {}).get("docs") or []
+        out = []
+        for i, doc in enumerate(docs):
+            headline = doc.get("headline")
+            if isinstance(headline, dict):
+                title = headline.get("main") or headline.get("print_headline") or "Untitled"
+            elif isinstance(headline, str):
+                title = headline.strip() or "Untitled"
+            else:
+                title = "Untitled"
+            img = None
+            multimedia = doc.get("multimedia") or []
+            for m in multimedia:
+                if not isinstance(m, dict):
+                    continue
+                if m.get("subtype") == "thumbnail" or (m.get("width") and m.get("height")):
+                    img = m.get("url")
+                    if img and not img.startswith("http"):
+                        img = "https://static01.nyt.com/" + img
+                    break
+            if not img and multimedia:
+                m = multimedia[0]
+                if isinstance(m, dict):
+                    img = m.get("url")
+                    if img and not img.startswith("http"):
+                        img = "https://static01.nyt.com/" + img
+            out.append({
+                "id": doc.get("_id") or f"nyt-search-{i}",
+                "title": title,
+                "abstract": doc.get("snippet"),
+                "url": doc.get("web_url"),
+                "section": (doc.get("section_name") or doc.get("news_desk") or "").replace(";", ", "),
+                "byline": (doc.get("byline") or {}).get("original") if isinstance(doc.get("byline"), dict) else doc.get("byline"),
+                "published_date": doc.get("pub_date", "")[:10] if doc.get("pub_date") else None,
+                "image_url": img,
+            })
+        _nytimes_search_cache[query_key] = (out, now)
+        return out[:4]
 
 
 class BasketRequest(BaseModel):

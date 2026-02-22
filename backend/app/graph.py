@@ -1435,3 +1435,223 @@ async def api_stats() -> StatsResponse:
     """Graph statistics: node and relationship counts."""
     s = await graph_stats()
     return StatsResponse(**s)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# BFS-by-layer: resolve query → expand layer-by-layer → return cumulative
+# ═══════════════════════════════════════════════════════════════════════════
+
+MAX_BFS_NODES = 500
+
+
+class BFSNode(BaseModel):
+    id: str
+    name: str
+    labels: list[str] = []
+    layer: int = 0
+
+
+class BFSLink(BaseModel):
+    source: str
+    target: str
+    type: str = ""
+    layer: int = 0
+
+
+class BFSLayer(BaseModel):
+    nodes: list[BFSNode] = []
+    links: list[BFSLink] = []
+
+
+# Common stopwords to drop when extracting query keywords for graph traversal.
+# Keeps only content-bearing terms (entities, topics, events).
+_BFS_STOPWORDS = frozenset({
+    "a", "an", "and", "are", "as", "at", "be", "been", "being", "both", "but", "by",
+    "can", "could", "did", "do", "does", "done", "during", "each", "for", "from",
+    "had", "has", "have", "having", "here", "how", "if", "in", "into", "is", "it",
+    "its", "just", "may", "might", "more", "most", "must", "no", "nor", "not",
+    "now", "of", "on", "once", "only", "or", "other", "our", "out", "over", "own",
+    "same", "shall", "should", "so", "some", "such", "than", "that", "the", "their",
+    "them", "then", "there", "these", "they", "this", "those", "through", "to",
+    "too", "under", "until", "very", "was", "we", "were", "what", "when", "where",
+    "which", "while", "who", "will", "with", "would", "you", "your",
+})
+
+
+def _extract_keywords_from_query(query: str) -> list[str]:
+    """Tokenize query into content-bearing keywords for graph traversal.
+    Drops stopwords, short tokens, and duplicates. Order preserved."""
+    if not query or not query.strip():
+        return []
+    tokens = re.findall(r"[a-zA-Z0-9_\u0080-\uFFFF]+", query.strip())
+    seen: set[str] = set()
+    out: list[str] = []
+    for t in tokens:
+        lower = t.lower()
+        if (
+            len(lower) >= 2
+            and lower not in _BFS_STOPWORDS
+            and lower not in seen
+        ):
+            seen.add(lower)
+            out.append(lower)
+    return out
+
+
+class BFSLayersResponse(BaseModel):
+    query: str
+    keywords: list[str] = []
+    start_nodes: list[dict] = []
+    layers: list[BFSLayer] = []
+    total_nodes: int = 0
+    total_links: int = 0
+
+
+async def find_bfs_layers(
+    query: str,
+    max_depth: int = 4,
+) -> dict:
+    """BFS from nodes matching *query*, returning cumulative layers 0..max_depth.
+
+    Each layer[i] contains ALL nodes and links discovered up to depth i,
+    so the frontend can animate by setting graphData = layers[0], layers[1], …
+    """
+    depth = min(max_depth, 6)
+    keywords = _extract_keywords_from_query(query)
+    # Use extracted keywords for search when possible; fallback to full query
+    search_query = " ".join(keywords) if keywords else query
+    start_ids = await _resolve_query_to_start_element_ids(search_query, max_starts=10)
+    if not start_ids:
+        return {"query": query, "keywords": keywords, "start_nodes": [], "layers": [], "total_nodes": 0, "total_links": 0}
+
+    driver = _get_driver()
+
+    cypher = (
+        "MATCH (start) WHERE elementId(start) IN $start_ids "
+        f"MATCH path = (start)-[*1..{depth}]-(n) "
+        "WHERE none(x IN nodes(path) WHERE x:DataSource) "
+        "UNWIND range(0, size(nodes(path)) - 1) AS idx "
+        "WITH path, nodes(path)[idx] AS node, idx AS pos "
+        "RETURN DISTINCT "
+        "  elementId(node) AS eid, "
+        "  coalesce(node.name, node.title, node.label, node.question, node.slug, '') AS name, "
+        "  labels(node) AS labels, "
+        "  pos AS position, "
+        "  elementId(startNode(relationships(path)[0])) AS path_start_eid "
+        "LIMIT 3000"
+    )
+
+    node_cypher = (
+        "MATCH (start) WHERE elementId(start) IN $start_ids "
+        f"MATCH path = (start)-[*1..{depth}]-(n) "
+        "WHERE none(x IN nodes(path) WHERE x:DataSource) "
+        "WITH path, nodes(path) AS ns, relationships(path) AS rs, length(path) AS plen "
+        "RETURN "
+        "  [n IN ns | {eid: elementId(n), "
+        "    name: coalesce(n.name, n.title, n.label, n.question, n.slug, ''), "
+        "    labels: labels(n)}] AS path_nodes, "
+        "  [i IN range(0, size(rs)-1) | {src: elementId(startNode(rs[i])), "
+        "    tgt: elementId(endNode(rs[i])), type: type(rs[i]), pos: i+1}] AS path_edges, "
+        "  plen AS path_length "
+        "LIMIT 2000"
+    )
+
+    async with driver.session() as session:
+        result = await session.run(node_cypher, start_ids=start_ids)
+        raw = await result.data()
+
+    start_set = set(start_ids)
+    node_min_layer: dict[str, int] = {}
+    node_info: dict[str, dict] = {}
+    edge_set: dict[str, dict] = {}
+
+    for row in raw:
+        path_nodes = row["path_nodes"]
+        path_edges = row["path_edges"]
+
+        for i, pn in enumerate(path_nodes):
+            eid = pn["eid"]
+            layer = 0 if eid in start_set else i
+            if eid not in node_min_layer or layer < node_min_layer[eid]:
+                node_min_layer[eid] = layer
+                node_info[eid] = {
+                    "id": eid,
+                    "name": pn["name"],
+                    "labels": [l for l in pn["labels"] if l != "DataSource"],
+                }
+
+        for pe in path_edges:
+            src, tgt = pe["src"], pe["tgt"]
+            edge_key = f"{src}->{tgt}" if src < tgt else f"{tgt}->{src}"
+            if edge_key not in edge_set:
+                src_layer = node_min_layer.get(src, pe["pos"])
+                tgt_layer = node_min_layer.get(tgt, pe["pos"])
+                edge_layer = max(src_layer, tgt_layer)
+                edge_set[edge_key] = {
+                    "source": src,
+                    "target": tgt,
+                    "type": pe["type"],
+                    "layer": edge_layer,
+                }
+
+    for eid in start_set:
+        if eid not in node_min_layer:
+            async with driver.session() as session:
+                r = await session.run(
+                    "MATCH (n) WHERE elementId(n) = $eid "
+                    "RETURN coalesce(n.name, n.title, n.label, n.question, '') AS name, labels(n) AS labels",
+                    eid=eid,
+                )
+                data = await r.data()
+                if data:
+                    node_min_layer[eid] = 0
+                    node_info[eid] = {
+                        "id": eid,
+                        "name": data[0]["name"],
+                        "labels": [l for l in data[0]["labels"] if l != "DataSource"],
+                    }
+
+    if len(node_info) > MAX_BFS_NODES:
+        sorted_nodes = sorted(node_min_layer.items(), key=lambda x: x[1])
+        keep = {eid for eid, _ in sorted_nodes[:MAX_BFS_NODES]}
+        node_info = {k: v for k, v in node_info.items() if k in keep}
+        node_min_layer = {k: v for k, v in node_min_layer.items() if k in keep}
+        edge_set = {
+            k: v for k, v in edge_set.items()
+            if v["source"] in keep and v["target"] in keep
+        }
+
+    layers: list[dict] = []
+    for layer_idx in range(depth + 1):
+        cum_nodes = [
+            {**info, "layer": node_min_layer[eid]}
+            for eid, info in node_info.items()
+            if node_min_layer[eid] <= layer_idx
+        ]
+        cum_links = [
+            v for v in edge_set.values()
+            if v["layer"] <= layer_idx
+            and v["source"] in node_info
+            and v["target"] in node_info
+            and node_min_layer.get(v["source"], 999) <= layer_idx
+            and node_min_layer.get(v["target"], 999) <= layer_idx
+        ]
+        layers.append({"nodes": cum_nodes, "links": cum_links})
+
+    start_nodes_info = [
+        {"id": eid, "name": node_info[eid]["name"]}
+        for eid in start_set
+        if eid in node_info
+    ]
+
+    total_nodes = len(node_info)
+    total_links = len(edge_set)
+
+    return {
+        "query": query,
+        "keywords": keywords,
+        "start_nodes": start_nodes_info,
+        "layers": layers,
+        "total_nodes": total_nodes,
+        "total_links": total_links,
+    }

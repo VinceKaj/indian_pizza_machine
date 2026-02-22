@@ -171,6 +171,13 @@ def build_basket_no_target(input_market_ids, top_k=10, temperature=0.1,
     weights = weights_tensor.cpu().numpy()
     similarities_np = similarities.cpu().numpy()
     
+    # Add lognormal noise so weights are more spread out (no-target case only)
+    sigma = 0.5  # scale of lognormal noise
+    lognormal_noise = np.exp(np.random.normal(0, sigma, size=weights.shape))
+    weights = weights * lognormal_noise
+    # Renormalize to sum to 1
+    weights = weights / (weights.sum() or 1.0)
+    
     # Find most representative question
     centroid_idx = int(torch.argmax(similarities).item())
     centroid_question = selected_info[centroid_idx].get('question', '')

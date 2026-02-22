@@ -1,6 +1,7 @@
-import { useEffect, useState, useMemo, useRef } from 'react'
+import { useEffect, useState, useMemo, useRef, useCallback } from 'react'
 import { Routes, Route, useNavigate, useLocation, useParams } from 'react-router-dom'
-import { ResponsiveContainer, AreaChart, Area, LineChart, Line, XAxis, YAxis, Tooltip, CartesianGrid } from 'recharts'
+import { ResponsiveContainer, ComposedChart, Area, Line, XAxis, YAxis, Tooltip, CartesianGrid } from 'recharts'
+import ForceGraph2D from 'react-force-graph-2d'
 
 function Section({ title, children, className = '' }) {
   return (
@@ -49,6 +50,168 @@ function BlueSwipe() {
   )
 }
 
+const COINBASE_WS_URL = 'wss://ws-feed.exchange.coinbase.com'
+const CRYPTO_PAIRS = ['BTC-USD', 'ETH-USD', 'SOL-USD', 'DOGE-USD', 'XRP-USD', 'AVAX-USD', 'LINK-USD', 'MATIC-USD', 'DOT-USD', 'LTC-USD']
+
+const FLASH_MS = 400
+
+function CryptoMarquee() {
+  const [tickers, setTickers] = useState(() =>
+    Object.fromEntries(CRYPTO_PAIRS.map((id) => [id, { price: null, open24h: null }]))
+  )
+  const [flash, setFlash] = useState({}) // product_id -> 'up' | 'down'
+  const [connected, setConnected] = useState(false)
+  const wsRef = useRef(null)
+  const reconnectTimeoutRef = useRef(null)
+  const flashTimeoutsRef = useRef({})
+
+  useEffect(() => {
+    function connect() {
+      const ws = new WebSocket(COINBASE_WS_URL)
+      wsRef.current = ws
+
+      ws.onopen = () => {
+        setConnected(true)
+        ws.send(
+          JSON.stringify({
+            type: 'subscribe',
+            product_ids: CRYPTO_PAIRS,
+            channels: ['ticker', 'heartbeat'],
+          })
+        )
+      }
+
+      ws.onmessage = (event) => {
+        try {
+          const msg = JSON.parse(event.data)
+          if (msg.type === 'ticker' && msg.product_id && msg.price != null) {
+            const newPrice = parseFloat(msg.price)
+            setTickers((prev) => {
+              const prevPrice = prev[msg.product_id]?.price != null ? parseFloat(prev[msg.product_id].price) : null
+              const direction = prevPrice != null ? (newPrice > prevPrice ? 'up' : newPrice < prevPrice ? 'down' : null) : null
+              if (direction) {
+                if (flashTimeoutsRef.current[msg.product_id]) clearTimeout(flashTimeoutsRef.current[msg.product_id])
+                setFlash((f) => ({ ...f, [msg.product_id]: direction }))
+                flashTimeoutsRef.current[msg.product_id] = setTimeout(() => {
+                  setFlash((f) => {
+                    const next = { ...f }
+                    delete next[msg.product_id]
+                    return next
+                  })
+                }, FLASH_MS)
+              }
+              return {
+                ...prev,
+                [msg.product_id]: {
+                  price: msg.price,
+                  open24h: msg.open_24h ?? prev[msg.product_id]?.open24h ?? null,
+                },
+              }
+            })
+          }
+        } catch (_) {}
+      }
+
+      ws.onclose = () => {
+        setConnected(false)
+        wsRef.current = null
+        reconnectTimeoutRef.current = setTimeout(connect, 3000)
+      }
+
+      ws.onerror = () => {}
+    }
+
+    connect()
+    return () => {
+      if (reconnectTimeoutRef.current) clearTimeout(reconnectTimeoutRef.current)
+      Object.values(flashTimeoutsRef.current).forEach(clearTimeout)
+      flashTimeoutsRef.current = {}
+      if (wsRef.current) wsRef.current.close()
+      wsRef.current = null
+    }
+  }, [])
+
+  const items = CRYPTO_PAIRS.map((id) => {
+    const t = tickers[id]
+    const price = t?.price != null ? parseFloat(t.price) : null
+    const open = t?.open24h != null ? parseFloat(t.open24h) : null
+    let changePct = null
+    if (price != null && open != null && open > 0) {
+      changePct = ((price - open) / open) * 100
+    }
+    const symbol = id.replace('-USD', '')
+    const flashDir = flash[id]
+    return {
+      id,
+      symbol,
+      price,
+      changePct,
+      flashDir,
+    }
+  })
+
+  return (
+    <div className="relative bg-blue-700 text-white py-3 overflow-hidden shrink-0" style={{ backgroundColor: '#1d4ed8' }}>
+      <div className="flex items-center gap-4 overflow-hidden">
+        <div className="flex shrink-0 items-center gap-2 px-4">
+          <span className="flex h-6 w-6 items-center justify-center bg-white/20 text-white">
+            <svg className="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6" />
+            </svg>
+          </span>
+          <span className="text-sm font-medium text-white">Live</span>
+        </div>
+        <div className="ticker-wrap flex-1 min-w-0 overflow-hidden bg-blue-700" style={{ backgroundColor: '#1d4ed8' }}>
+          <div className="ticker flex gap-8 whitespace-nowrap" style={{ width: 'max-content' }}>
+          {items.map(({ id, symbol, price, changePct, flashDir }) => {
+            const flashClass = flashDir === 'up' ? 'bg-emerald-500/90 text-white' : flashDir === 'down' ? 'bg-red-500/90 text-white' : ''
+            return (
+              <span
+                key={id}
+                className={`inline-flex items-center gap-2 px-4 shrink-0 transition-colors duration-150 rounded ${flashClass}`}
+              >
+                <span className="font-semibold">{symbol}</span>
+                <span className="tabular-nums">
+                  {price != null ? `$${Number(price).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : '—'}
+                </span>
+                {changePct != null && (
+                  <span className={changePct >= 0 ? 'text-emerald-200' : 'text-red-200'}>
+                    {changePct >= 0 ? '+' : ''}{changePct.toFixed(2)}%
+                  </span>
+                )}
+              </span>
+            )
+          })}
+          {items.map(({ id, symbol, price, changePct, flashDir }) => {
+            const flashClass = flashDir === 'up' ? 'bg-emerald-500/90 text-white' : flashDir === 'down' ? 'bg-red-500/90 text-white' : ''
+            return (
+              <span
+                key={`dup-${id}`}
+                className={`inline-flex items-center gap-2 px-4 shrink-0 transition-colors duration-150 rounded ${flashClass}`}
+                aria-hidden
+              >
+                <span className="font-semibold">{symbol}</span>
+                <span className="tabular-nums">
+                  {price != null ? `$${Number(price).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : '—'}
+                </span>
+                {changePct != null && (
+                  <span className={changePct >= 0 ? 'text-emerald-200' : 'text-red-200'}>
+                    {changePct >= 0 ? '+' : ''}{changePct.toFixed(2)}%
+                  </span>
+                )}
+              </span>
+            )
+          })}
+          </div>
+        </div>
+      </div>
+      {!connected && (
+        <div className="absolute top-1 right-2 text-[10px] text-amber-200">Reconnecting…</div>
+      )}
+    </div>
+  )
+}
+
 function EventPage() {
   const { slug } = useParams()
   const location = useLocation()
@@ -58,6 +221,19 @@ function EventPage() {
   const [error, setError] = useState(null)
   const [priceHistory, setPriceHistory] = useState(null)
   const [chartInterval, setChartInterval] = useState('1d')
+  const [navSearchValue, setNavSearchValue] = useState('')
+  const [dashboardNews, setDashboardNews] = useState([])
+  const [dashboardNewsLoading, setDashboardNewsLoading] = useState(true)
+  const [relatedCandidates, setRelatedCandidates] = useState([])
+  const [relatedHistories, setRelatedHistories] = useState({})
+  const [selectedRelatedIds, setSelectedRelatedIds] = useState(new Set())
+
+  function handleNavSearchSubmit(e) {
+    e.preventDefault()
+    const input = navSearchValue.trim()
+    if (!input) return
+    navigate('/search', { state: { prompt: input } })
+  }
 
   useEffect(() => {
     if (apiResponse || !slug) return
@@ -114,6 +290,111 @@ function EventPage() {
     fetchHistory()
     return () => { cancelled = true }
   }, [apiResponse, chartInterval])
+
+  // Related markets: semantic search by title, top 3 results (excluding current market), then resolve CLOB token
+  useEffect(() => {
+    if (!apiResponse?.data) return
+    const raw = apiResponse.data
+    const events = Array.isArray(raw) ? raw : raw ? [raw] : []
+    const event = events[0]
+    const markets = event?.markets ?? []
+    const currentMarketId = markets[0]?.id ? String(markets[0].id) : null
+    const title = (event?.title ?? event?.question ?? apiResponse.slug ?? '').trim() || 'Market'
+    let cancelled = false
+    fetch('/api/search/semantic', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prompt: title, num_tags: 5, events_per_tag: 30 }),
+    })
+      .then((r) => r.ok ? r.json() : { events: [] })
+      .then(async (data) => {
+        if (cancelled || !Array.isArray(data.events)) return
+        const filtered = data.events
+          .filter((ev) => ev?.best_market?.id && String(ev.best_market.id) !== currentMarketId)
+          .slice(0, 3)
+        const withTokens = []
+        for (const ev of filtered) {
+          const bm = ev.best_market
+          const marketId = bm.id
+          try {
+            const res = await fetch(`/api/polymarket/markets/${encodeURIComponent(marketId)}`)
+            if (cancelled || !res.ok) continue
+            const marketData = await res.json()
+            const cids = marketData?.clobTokenIds
+            let tokenId = null
+            if (Array.isArray(cids) && cids.length > 0) tokenId = cids[0]
+            else if (typeof cids === 'string') try { const arr = JSON.parse(cids); tokenId = arr?.[0] } catch { /* ignore */ }
+            if (tokenId) withTokens.push({ id: marketId, question: bm.question || ev.event_title || 'Market', tokenId })
+          } catch { /* skip */ }
+        }
+        if (!cancelled) setRelatedCandidates(withTokens)
+      })
+      .catch(() => { if (!cancelled) setRelatedCandidates([]) })
+    return () => { cancelled = true }
+  }, [apiResponse])
+
+  // Fetch price history for each selected related market (same interval as main)
+  useEffect(() => {
+    if (relatedCandidates.length === 0 || selectedRelatedIds.size === 0) {
+      setRelatedHistories({})
+      return
+    }
+    const toFetch = relatedCandidates.filter((c) => selectedRelatedIds.has(c.id))
+    if (toFetch.length === 0) {
+      setRelatedHistories({})
+      return
+    }
+    let cancelled = false
+    Promise.all(
+      toFetch.map((c) =>
+        fetch(`/api/polymarket/prices-history?market=${encodeURIComponent(c.tokenId)}&interval=${chartInterval}`)
+          .then((r) => r.ok ? r.json() : { history: [] })
+          .then((data) => ({ id: c.id, history: data?.history || [] }))
+          .catch(() => ({ id: c.id, history: [] }))
+      )
+    ).then((results) => {
+      if (cancelled) return
+      const next = {}
+      results.forEach(({ id, history }) => { next[id] = history })
+      setRelatedHistories(next)
+    })
+    return () => { cancelled = true }
+  }, [relatedCandidates, selectedRelatedIds, chartInterval])
+
+  useEffect(() => {
+    if (!apiResponse?.data) return
+    const raw = apiResponse.data
+    const events = Array.isArray(raw) ? raw : raw ? [raw] : []
+    const event = events[0]
+    const topic = (event?.title ?? event?.question ?? apiResponse.slug ?? 'Market').trim() || 'Market'
+    let cancelled = false
+    setDashboardNewsLoading(true)
+    const searchUrl = `/api/nytimes/search?q=${encodeURIComponent(topic)}`
+    fetch(searchUrl)
+      .then((res) => res.ok ? res.json() : [])
+      .then(async (data) => {
+        if (cancelled) return
+        if (Array.isArray(data) && data.length > 0) {
+          setDashboardNews(data.slice(0, 4))
+          return
+        }
+        const fallbackRes = await fetch('/api/nytimes/top-stories?section=home')
+        const fallback = fallbackRes.ok ? await fallbackRes.json() : []
+        if (!cancelled && Array.isArray(fallback)) setDashboardNews(fallback.slice(0, 4))
+      })
+      .catch(async () => {
+        if (cancelled) return
+        try {
+          const fallbackRes = await fetch('/api/nytimes/top-stories?section=home')
+          const fallback = fallbackRes.ok ? await fallbackRes.json() : []
+          if (!cancelled && Array.isArray(fallback)) setDashboardNews(fallback.slice(0, 4))
+        } catch {
+          if (!cancelled) setDashboardNews([])
+        }
+      })
+      .finally(() => { if (!cancelled) setDashboardNewsLoading(false) })
+    return () => { cancelled = true }
+  }, [apiResponse])
 
   if (loading) {
     return (
@@ -198,10 +479,82 @@ function EventPage() {
     }
   }, [primaryPrice, priceHistory, primaryMarket?.oneDayPriceChange])
 
+  // Merge related series into chart data; normalize each series to 0-100 so scales are comparable
+  const { mergedChartData, relatedSeriesKeys, useNormalized } = useMemo(() => {
+    const selectedRelated = relatedCandidates.filter((c) => selectedRelatedIds.has(c.id))
+    const base = priceHistory && priceHistory.length > 0
+      ? [...priceHistory].sort((a, b) => (a.t ?? 0) - (b.t ?? 0)).map(({ t, p }) => {
+          const d = new Date((t ?? 0) * 1000)
+          const raw = (p ?? 0) <= 1 ? (p ?? 0) * 100 : (p ?? 0)
+          return { t: t ?? 0, date: `${d.getMonth() + 1}/${d.getDate()}`, price: raw }
+        })
+      : chartData?.map((row, i) => {
+          const t = Math.floor(Date.now() / 1000) - (chartData.length - 1 - i) * 86400
+          return { t, date: row.date, price: row.price }
+        }) || []
+    if (base.length === 0) return { mergedChartData: chartData || [], relatedSeriesKeys: [], useNormalized: false }
+    const valueAtT = (history, t) => {
+      if (!history?.length) return null
+      let i = 0
+      while (i < history.length && (history[i].t ?? 0) < t) i++
+      if (i === 0) return history[0].p != null ? (history[0].p <= 1 ? history[0].p * 100 : history[0].p) : null
+      if (i >= history.length) return history[history.length - 1].p != null ? (history[history.length - 1].p <= 1 ? history[history.length - 1].p * 100 : history[history.length - 1].p) : null
+      const a = history[i - 1]
+      const b = history[i]
+      const pa = a.p != null ? (a.p <= 1 ? a.p * 100 : a.p) : null
+      const pb = b.p != null ? (b.p <= 1 ? b.p * 100 : b.p) : null
+      if (pa == null) return pb
+      if (pb == null) return pa
+      const ta = a.t ?? 0
+      const tb = b.t ?? 0
+      if (tb === ta) return pa
+      const frac = (t - ta) / (tb - ta)
+      return pa + frac * (pb - pa)
+    }
+    const series = { main: base.map((r) => r.price) }
+    selectedRelated.forEach((c, idx) => {
+      const hist = relatedHistories[c.id] || []
+      series[`rel_${c.id}`] = base.map((r) => valueAtT(hist, r.t))
+    })
+    const keys = ['main', ...selectedRelated.map((c) => `rel_${c.id}`)]
+    const mins = {}
+    const maxs = {}
+    keys.forEach((k) => {
+      const vals = series[k].filter((v) => v != null && !Number.isNaN(v))
+      if (vals.length === 0) { mins[k] = 0; maxs[k] = 100 } else { mins[k] = Math.min(...vals); maxs[k] = Math.max(...vals) }
+    })
+    const norm = (k, v) => {
+      if (v == null || Number.isNaN(v)) return null
+      const min = mins[k]
+      const max = maxs[k]
+      if (max === min) return 50
+      return ((v - min) / (max - min)) * 100
+    }
+    const mergedData = base.map((row, i) => {
+      const out = { date: row.date, price: selectedRelated.length > 0 ? norm('main', row.price) : row.price }
+      selectedRelated.forEach((c) => {
+        const key = `rel_${c.id}`
+        out[key] = norm(key, series[key][i])
+      })
+      return out
+    })
+    const relatedSeriesKeys = selectedRelated.map((c) => ({ id: c.id, key: `rel_${c.id}`, question: c.question }))
+    return { mergedChartData: mergedData, relatedSeriesKeys, useNormalized: selectedRelated.length > 0 }
+  }, [priceHistory, chartData, relatedHistories, selectedRelatedIds, relatedCandidates])
+
+  const toggleRelated = (id) => {
+    setSelectedRelatedIds((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }
+
   return (
     <div className="min-h-screen bg-blue-50 text-black flex flex-col">
       <BlueSwipe />
-      {/* Header */}
+      {/* Header — dashboard: solid blue-700 */}
       <header className="sticky top-0 z-50 bg-blue-700">
         <nav className="flex h-20 items-center justify-between px-4 md:px-6">
           <a href="/" className="flex items-center gap-2 shrink-0">
@@ -215,13 +568,30 @@ function EventPage() {
               <li><a href="/strategies" className="text-sm text-white hover:text-white/80">Strategies</a></li>
               <li><a href="/arb" className="text-sm text-white hover:text-white/80">Arbitrage</a></li>
             </ul>
-            <button
-              type="button"
-              onClick={() => navigate('/')}
-              className="bg-white/20 px-4 py-1.5 text-sm font-medium text-white hover:bg-white/30"
-            >
-              New search
-            </button>
+            <form className="w-full max-w-[200px] md:max-w-[240px]" onSubmit={handleNavSearchSubmit}>
+              <div className="group relative flex w-full items-center rounded pl-2.5 pr-2.5">
+                <div
+                  className="pointer-events-none absolute inset-0 z-0 rounded"
+                  style={{
+                    background: 'linear-gradient(90deg, transparent 0%, rgba(255,255,255,0.12) 10%, rgba(255,255,255,0.25) 22%, rgba(255,255,255,0.25) 78%, rgba(255,255,255,0.12) 90%, transparent 100%)',
+                  }}
+                />
+                <div className="pointer-events-none absolute inset-0 z-0 rounded bg-white/50 opacity-0 transition-opacity duration-300 group-focus-within:opacity-100" />
+                <span className="relative z-10 mr-2 flex shrink-0 text-white/90" aria-hidden>
+                  <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+                  </svg>
+                </span>
+                <input
+                  type="search"
+                  placeholder="New search…"
+                  aria-label="New search"
+                  className="relative z-10 w-full border-0 bg-transparent py-2 pl-0 pr-1 text-sm text-white placeholder-white/60 outline-none"
+                  value={navSearchValue}
+                  onChange={(e) => setNavSearchValue(e.target.value)}
+                />
+              </div>
+            </form>
           </div>
         </nav>
       </header>
@@ -233,32 +603,39 @@ function EventPage() {
           {/* Interactive chart — 80vh with generous padding, extra top space */}
           <div className="pt-20 pb-10 px-10 md:pt-24 md:pb-12 md:px-12 flex flex-col" style={{ height: '80vh' }}>
             <div className="flex justify-end mb-2">
-              <div className="inline-flex border border-gray-300 bg-white shadow-sm" role="tablist" aria-label="Chart time range">
+              <div className="inline-flex" role="tablist" aria-label="Chart time range">
                 {[
                   { value: '1d', label: '1D' },
                   { value: '1w', label: '1W' },
                   { value: 'max', label: '1M' },
-                ].map(({ value, label }) => (
-                  <button
-                    key={value}
-                    type="button"
-                    role="tab"
-                    aria-selected={chartInterval === value}
-                    onClick={() => setChartInterval(value)}
-                    className={`px-4 py-2 text-sm font-medium border-r border-gray-300 last:border-r-0 transition-colors ${
-                      chartInterval === value
-                        ? 'bg-gray-900 text-white'
-                        : 'bg-white text-black hover:bg-gray-100'
-                    }`}
-                  >
-                    {label}
-                  </button>
-                ))}
+                ].map(({ value, label }) => {
+                  const selected = chartInterval === value
+                  return (
+                    <button
+                      key={value}
+                      type="button"
+                      role="tab"
+                      aria-selected={selected}
+                      onClick={() => setChartInterval(value)}
+                      className={`group relative px-4 py-2 text-sm font-medium overflow-hidden ${
+                        selected ? 'bg-blue-700 text-white' : 'bg-transparent text-black'
+                      }`}
+                    >
+                      {!selected && (
+                        <>
+                          <span className="absolute left-0 top-0 bottom-0 w-0 bg-blue-700 group-hover:w-1/2 transition-[width] duration-300 ease-out pointer-events-none" aria-hidden />
+                          <span className="absolute right-0 top-0 bottom-0 w-0 bg-blue-700 group-hover:w-1/2 transition-[width] duration-300 ease-out pointer-events-none" aria-hidden />
+                        </>
+                      )}
+                      <span className="relative z-10 group-hover:text-white transition-colors duration-300">{label}</span>
+                    </button>
+                  )
+                })}
               </div>
             </div>
             <div className="flex-1 min-h-0">
               <ResponsiveContainer width="100%" height="100%">
-                <AreaChart data={chartData} margin={{ top: 12, right: 16, bottom: 8, left: 8 }}>
+                <ComposedChart data={useNormalized ? mergedChartData : chartData} margin={{ top: 12, right: 16, bottom: 8, left: 8 }}>
                   <defs>
                     <linearGradient id="chartGrad" x1="0" y1="0" x2="0" y2="1">
                       <stop offset="0%" stopColor={chartColor} stopOpacity={0.35} />
@@ -267,44 +644,84 @@ function EventPage() {
                   </defs>
                   <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" vertical={false} />
                   <XAxis dataKey="date" tick={{ fontSize: 10, fill: '#999' }} axisLine={false} tickLine={false} />
-                  <YAxis tick={{ fontSize: 10, fill: '#999' }} axisLine={false} tickLine={false} tickFormatter={(v) => `${v}¢`} domain={['dataMin - 0.5', 'dataMax + 0.5']} />
+                  <YAxis tick={{ fontSize: 10, fill: '#999' }} axisLine={false} tickLine={false} tickFormatter={(v) => useNormalized ? `${Number(v).toFixed(1).replace(/\.?0+$/, '')}%` : `${Number(v).toFixed(3).replace(/\.?0+$/, '')}¢`} domain={useNormalized ? [0, 100] : ['dataMin - 0.5', 'dataMax + 0.5']} />
                   <Tooltip
                     contentStyle={{ fontSize: 12, border: '1px solid #e5e7eb', boxShadow: 'none' }}
-                    formatter={(v) => [`${v.toFixed(1)}¢`, 'Price']}
+                    formatter={(v, name) => [v != null ? (useNormalized ? `${Number(v).toFixed(1)}%` : `${Number(v).toFixed(1)}¢`) : '—', name === 'price' ? 'This market' : relatedSeriesKeys.find((r) => r.key === name)?.question || name]}
                     labelStyle={{ fontSize: 11, color: '#666' }}
                   />
-                  <Area type="monotone" dataKey="price" stroke={chartColor} strokeWidth={1.5} fill="url(#chartGrad)" dot={false} activeDot={{ r: 3, fill: chartColor }} />
-                </AreaChart>
+                  <Area type="monotone" dataKey="price" name="This market" stroke={chartColor} strokeWidth={1.5} fill="url(#chartGrad)" dot={false} activeDot={{ r: 3, fill: chartColor }} />
+                  {relatedSeriesKeys.map((r, i) => {
+                    const colors = ['#2563eb', '#7c3aed', '#059669', '#dc2626']
+                    const stroke = colors[i % colors.length]
+                    return <Line key={r.key} type="monotone" dataKey={r.key} name={r.question} stroke={stroke} strokeWidth={1.5} dot={false} activeDot={{ r: 3, fill: stroke }} />
+                  })}
+                </ComposedChart>
               </ResponsiveContainer>
             </div>
+            {/* Related markets: top 4 as checkbox-style toggles, blue slide on hover, blue when selected */}
+            {relatedCandidates.length > 0 && (
+              <div className="mt-4 flex flex-wrap items-center gap-2">
+                <span className="text-sm text-black/60 mr-1">Compare:</span>
+                {relatedCandidates.map((c) => {
+                  const selected = selectedRelatedIds.has(c.id)
+                  return (
+                    <button
+                      key={c.id}
+                      type="button"
+                      onClick={() => toggleRelated(c.id)}
+                      className={`group relative overflow-hidden px-3 py-1.5 text-left text-sm max-w-[220px] truncate ${
+                        selected ? 'bg-blue-700 text-white' : 'bg-transparent text-black'
+                      }`}
+                      title={c.question}
+                    >
+                      {!selected && (
+                        <>
+                          <span className="absolute left-0 top-0 bottom-0 w-0 bg-blue-700 group-hover:w-1/2 transition-[width] duration-300 ease-out pointer-events-none" aria-hidden />
+                          <span className="absolute right-0 top-0 bottom-0 w-0 bg-blue-700 group-hover:w-1/2 transition-[width] duration-300 ease-out pointer-events-none" aria-hidden />
+                        </>
+                      )}
+                      <span className="relative z-10 group-hover:text-white transition-colors duration-300">{c.question}</span>
+                    </button>
+                  )
+                })}
+              </div>
+            )}
           </div>
 
-          {/* News */}
+          {/* News — NY Times API */}
           <div className="pt-6">
             <h3 className="px-6 pb-4 text-2xl font-semibold text-black">News</h3>
-            <ul>
-              <li className="flex items-center gap-4 border-t border-black/10 px-6 py-4">
-                <img src="https://picsum.photos/96/96?random=1" alt="" className="h-20 w-20 shrink-0 object-cover" />
-                <div className="min-w-0 flex-1">
-                  <span className="text-base text-black">Musk tweets "buying Ryanair might be a good idea" amid aviation sector rally</span>
-                </div>
-                <span className="text-sm text-black/50 shrink-0">Reuters</span>
-              </li>
-              <li className="flex items-center gap-4 border-t border-black/10 px-6 py-4">
-                <img src="https://picsum.photos/96/96?random=2" alt="" className="h-20 w-20 shrink-0 object-cover" />
-                <div className="min-w-0 flex-1">
-                  <span className="text-base text-black">Ryanair shares jump 8% on speculation of potential Musk acquisition offer</span>
-                </div>
-                <span className="text-sm text-black/50 shrink-0">Bloomberg</span>
-              </li>
-              <li className="flex items-center gap-4 border-t border-black/10 px-6 py-4">
-                <img src="https://picsum.photos/96/96?random=3" alt="" className="h-20 w-20 shrink-0 object-cover" />
-                <div className="min-w-0 flex-1">
-                  <span className="text-base text-black">EU regulators signal any airline acquisition would face antitrust review</span>
-                </div>
-                <span className="text-sm text-black/50 shrink-0">FT</span>
-              </li>
-            </ul>
+            {dashboardNewsLoading ? (
+              <p className="px-6 py-4 text-black/50 text-sm">Loading news…</p>
+            ) : dashboardNews.length === 0 ? (
+              <p className="px-6 py-4 text-black/50 text-sm">No news available.</p>
+            ) : (
+              <ul>
+                {dashboardNews.map((article) => (
+                  <li key={article.id} className="border-t border-black/10">
+                    <a
+                      href={article.url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="flex items-center gap-4 px-6 py-4 hover:bg-black/5 transition-colors"
+                    >
+                      {article.image_url ? (
+                        <img src={article.image_url} alt="" className="h-20 w-20 shrink-0 object-cover" />
+                      ) : (
+                        <div className="h-20 w-20 shrink-0 bg-gray-200 flex items-center justify-center">
+                          <span className="text-gray-400 text-xs">No image</span>
+                        </div>
+                      )}
+                      <div className="min-w-0 flex-1">
+                        <span className="text-base text-black">{article.title}</span>
+                      </div>
+                      <span className="text-sm text-black/50 shrink-0">The New York Times</span>
+                    </a>
+                  </li>
+                ))}
+              </ul>
+            )}
           </div>
         </div>
 
@@ -398,6 +815,15 @@ function SemanticResultsPage() {
   const [basketData, setBasketData] = useState(null)
   const [basketLoading, setBasketLoading] = useState(false)
   const [basketError, setBasketError] = useState(null)
+  const [hoveredWeightIndex, setHoveredWeightIndex] = useState(null)
+  const [navSearchValue, setNavSearchValue] = useState('')
+
+  function handleNavSearchSubmit(e) {
+    e.preventDefault()
+    const input = navSearchValue.trim()
+    if (!input) return
+    navigate('/search', { state: { prompt: input } })
+  }
 
   useEffect(() => {
     if (!prompt) return
@@ -523,41 +949,62 @@ function SemanticResultsPage() {
         const best = wordSearchMarkets.length
           ? wordSearchMarkets.reduce((a, b) => ((b.score ?? 0) > (a.score ?? 0) ? b : a), wordSearchMarkets[0])
           : null
-        if (!best || (best.score ?? 0) <= 0.7) {
+        const hasStrongTarget = best && (best.score ?? 0) > 0.7
+        const allInputIds = events.map((e) => e.best_market?.id).filter(Boolean)
+        const uniqueInputIds = [...new Set(allInputIds)].slice(0, 15)
+        if (uniqueInputIds.length === 0) {
           setBasketLoading(false)
           return
         }
+        if (!hasStrongTarget) {
+          const basketRes = await fetch('/api/basket-no-target', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              input_market_ids: uniqueInputIds,
+              top_k: 10,
+            }),
+          })
+          if (cancelled) return
+          const basketJson = await basketRes.json()
+          if (!basketRes.ok) {
+            setBasketError(basketJson?.detail ?? 'Basket failed')
+            setBasketLoading(false)
+            return
+          }
+          setBasketData({
+            ...basketJson,
+            noTarget: true,
+            target_question: basketJson.centroid_question ?? 'Synthetic basket (no single target)',
+          })
+        } else {
         // Use only best_market.id (same source as inputs) — match word-search best to an event’s best_market
         // best.id is same field as best_market.id (backend resolves word-search ids via Gamma)
-        const targetMarketId = best.id
-        const excludeIds = new Set([targetMarketId, ...wordSearchMarkets.map((m) => m.id)])
-        const inputIds = events
-          .map((e) => e.best_market?.id)
-          .filter(Boolean)
-          .filter((id) => !excludeIds.has(id))
-          .slice(0, 10)
-        if (inputIds.length === 0) {
-          setBasketLoading(false)
-          return
+          const targetMarketId = best.id
+          const excludeIds = new Set([targetMarketId, ...wordSearchMarkets.map((m) => m.id)])
+          const inputIds = uniqueInputIds.filter((id) => !excludeIds.has(id)).slice(0, 10)
+          if (inputIds.length === 0) {
+            setBasketLoading(false)
+            return
+          }
+          const basketRes = await fetch('/api/basket', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              target_market_id: targetMarketId,
+              input_market_ids: inputIds,
+              days: 7,
+            }),
+          })
+          if (cancelled) return
+          const basketJson = await basketRes.json()
+          if (!basketRes.ok) {
+            setBasketError(basketJson?.detail ?? 'Basket failed')
+            setBasketLoading(false)
+            return
+          }
+          setBasketData(basketJson)
         }
-        console.log('Target market ID sent to backend:', targetMarketId)
-        const basketRes = await fetch('/api/basket', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            target_market_id: targetMarketId,
-            input_market_ids: inputIds,
-            days: 7,
-          }),
-        })
-        if (cancelled) return
-        const basketJson = await basketRes.json()
-        if (!basketRes.ok) {
-          setBasketError(basketJson?.detail ?? 'Basket failed')
-          setBasketLoading(false)
-          return
-        }
-        setBasketData(basketJson)
       } catch (e) {
         if (!cancelled) {
           setBasketError(e.message ?? 'Request failed')
@@ -589,27 +1036,58 @@ function SemanticResultsPage() {
   return (
     <div className="min-h-screen bg-blue-50 text-black flex flex-col">
       <BlueSwipe />
-      <header className="sticky top-0 z-50 bg-blue-700">
+      <header className="sticky top-0 z-50 pb-12 bg-[linear-gradient(to_bottom,rgb(29_78_216)_0%,rgb(37_99_235)_35%,rgb(59_130_246)_50%,rgb(147_197_253)_65%,rgb(219_234_254)_80%,rgb(239_246_255)_100%)]">
         <nav className="flex h-20 items-center justify-between px-4 md:px-6">
           <a href="/" className="flex items-center gap-2 shrink-0">
             <span className="flex h-8 w-8 items-center justify-center bg-white/20 font-bold text-white text-sm">PA</span>
             <span className="hidden font-semibold tracking-tight text-white sm:inline">Polymarket Arb</span>
           </a>
-          <button type="button" onClick={() => navigate('/')} className="text-base text-white/80 hover:text-white underline underline-offset-2">
-            New search
-          </button>
+          <form className="w-full max-w-[200px] md:max-w-[240px]" onSubmit={handleNavSearchSubmit}>
+            <div className="group relative flex w-full items-center rounded pl-2.5 pr-2.5">
+              <div
+                className="pointer-events-none absolute inset-0 z-0 rounded"
+                style={{
+                  background: 'linear-gradient(90deg, transparent 0%, rgba(255,255,255,0.12) 10%, rgba(255,255,255,0.25) 22%, rgba(255,255,255,0.25) 78%, rgba(255,255,255,0.12) 90%, transparent 100%)',
+                }}
+              />
+              <div className="pointer-events-none absolute inset-0 z-0 rounded bg-white/50 opacity-0 transition-opacity duration-300 group-focus-within:opacity-100" />
+              <span className="relative z-10 mr-2 flex shrink-0 text-white/90" aria-hidden>
+                <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+                </svg>
+              </span>
+              <input
+                type="search"
+                placeholder="New search…"
+                aria-label="New search"
+                className="relative z-10 w-full border-0 bg-transparent py-2 pl-0 pr-1 text-sm text-white placeholder-white/60 outline-none"
+                value={navSearchValue}
+                onChange={(e) => setNavSearchValue(e.target.value)}
+              />
+            </div>
+          </form>
         </nav>
       </header>
 
-      <div className="mx-auto w-full max-w-4xl px-6 md:px-10 pt-14 pb-24">
-        <h1 className="text-3xl font-medium tracking-tight text-black/80 mb-2">"{prompt}"</h1>
+      <div className="mx-auto w-full max-w-7xl px-6 md:px-10 pt-14 pb-24">
+        <div className="flex items-center justify-between gap-4 mb-2">
+          <h1 className="text-3xl font-medium tracking-tight text-black/80 min-w-0">"{prompt}"</h1>
+          <a
+            href="/search/graph"
+            onClick={(e) => { e.preventDefault(); navigate('/search/graph', { state: { prompt } }) }}
+            className="group hover:text-white relative shrink-0 overflow-hidden rounded px-3 py-1.5 text-sm text-gray-500 no-underline transition-colors duration-300 group-hover:text-white"
+          >
+            <span className="absolute inset-y-0 left-0 w-0 bg-blue-700 transition-[width] duration-300 ease-out group-hover:w-full" aria-hidden />
+            <span className="relative z-10">Perform graph analysis</span>
+          </a>
+        </div>
         <div className="h-px bg-black/10 mb-12" />
 
         {error && (
           <p className="step-appear text-base text-red-600 mb-8">{error}</p>
         )}
 
-        {/* Pipeline: collapsible when complete */}
+        {/* Thinking process: collapsible when complete */}
         <div ref={pipelineRef}>
           {pipelinePhase === 'complete' && (
             <button
@@ -794,64 +1272,160 @@ function SemanticResultsPage() {
           )}
         </div>
 
-        {/* Graph section: target vs synthetic time series */}
-        <div className="h-px bg-black/10 mt-12 mb-4" />
-        <section className="mb-8">
-          <h2 className="text-sm font-medium text-black/40 uppercase tracking-wider mb-4">
-            Target vs synthetic
-          </h2>
-          <div className="min-h-[280px] flex flex-col items-center justify-center">
-            {basketLoading && (
-              <p className="text-black/50 flex items-center gap-2">
-                <Spinner />
-                Loading basket and time series…
-              </p>
-            )}
-            {!basketLoading && basketError && (
-              <p className="text-red-600">{basketError}</p>
-            )}
-            {!basketLoading && !basketError && !basketData && (
-              <p className="text-black/50 text-center max-w-md">
-                If a search returns a strong text match (&gt;70%), the target market and synthetic basket time series will appear here.
-              </p>
-            )}
-            {!basketLoading && !basketError && basketData && (() => {
-              const ts = basketData.timestamps ?? []
-              const targetPrices = basketData.target_prices ?? []
-              const syntheticPrices = basketData.synthetic_prices ?? []
-              const chartData = ts.map((t, i) => {
-                const d = new Date(t)
-                return {
-                  date: `${d.getMonth() + 1}/${d.getDate()}`,
-                  target: Math.round((targetPrices[i] ?? 0) * 1000) / 10,
-                  synthetic: Math.round((syntheticPrices[i] ?? 0) * 1000) / 10,
-                }
-              })
-              return (
-                <div className="w-full">
-                  <p className="text-sm text-black/60 mb-2 truncate" title={basketData.target_question}>
-                    {basketData.target_question}
+        {/* Full-width section below: no side margins; graph slightly in from left, heatmap right */}
+        <div className="w-screen relative left-1/2 -ml-[50vw] mt-12">
+          <section
+            className="results-section-resize w-full overflow-hidden"
+            style={{ minHeight: (basketData || basketLoading || basketError) ? 440 : 0 }}
+          >
+            <div className="flex flex-col md:flex-row gap-6 w-full min-h-[440px] transition-all duration-300 ease-out pl-10 pr-0">
+              {/* Left subsection: graph — 70% width */}
+              <div className="results-subsection-resize flex-[0_0_70%] min-w-0 flex flex-col items-start overflow-hidden">
+                <h2 className="text-base font-medium text-black/50 uppercase tracking-wider mb-4">
+                  Target vs synthetic
+                </h2>
+              <div className="w-full min-h-[440px] flex flex-col items-center justify-center transition-all duration-300 ease-out">
+                {basketLoading && (
+                  <p className="text-base text-black/50 flex items-center gap-2">
+                    <Spinner />
+                    Loading basket and time series…
                   </p>
-                  {basketData.r_squared != null && (
-                    <p className="text-xs text-black/40 mb-2">R² = {Number(basketData.r_squared).toFixed(4)}</p>
-                  )}
-                  <div className="w-full h-[260px]">
-                    <ResponsiveContainer width="100%" height="100%">
-                      <LineChart data={chartData} margin={{ top: 8, right: 16, bottom: 8, left: 8 }}>
-                        <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
-                        <XAxis dataKey="date" tick={{ fontSize: 11 }} stroke="#9ca3af" />
-                        <YAxis domain={[0, 100]} tick={{ fontSize: 11 }} stroke="#9ca3af" tickFormatter={(v) => `${v}%`} />
-                        <Tooltip formatter={(v) => `${Number(v).toFixed(1)}%`} labelFormatter={(l) => l} />
-                        <Line type="monotone" dataKey="target" name="Target" stroke="#2563eb" strokeWidth={2} dot={false} />
-                        <Line type="monotone" dataKey="synthetic" name="Synthetic" stroke="#16a34a" strokeWidth={2} dot={false} />
-                      </LineChart>
-                    </ResponsiveContainer>
-                  </div>
+                )}
+                {!basketLoading && basketError && (
+                  <p className="text-base text-red-600">{basketError}</p>
+                )}
+                {!basketLoading && !basketError && !basketData && (
+                  <p className="text-base text-black/50 text-center max-w-md">
+                    If a search returns a strong text match (&gt;70%), the target market and synthetic basket time series will appear here.
+                  </p>
+                )}
+                {!basketLoading && !basketError && basketData && (() => {
+                  if (basketData.noTarget) {
+                    return (
+                      <div className="w-full flex flex-col items-start transition-all duration-300 ease-out">
+                        <p className="text-base text-black/60 mb-2 truncate max-w-full" title={basketData.target_question}>
+                          {basketData.target_question}
+                        </p>
+                        <p className="text-sm text-black/40 mb-3">
+                          No single target market matched strongly; basket built from semantic similarity. Weights below.
+                        </p>
+                      </div>
+                    )
+                  }
+                  const ts = basketData.timestamps ?? []
+                  const targetPrices = basketData.target_prices ?? []
+                  const syntheticPrices = basketData.synthetic_prices ?? []
+                  const chartData = ts.map((t, i) => {
+                    const d = new Date(t)
+                    return {
+                      date: `${d.getMonth() + 1}/${d.getDate()}`,
+                      target: Math.round((targetPrices[i] ?? 0) * 1000) / 10,
+                      synthetic: Math.round((syntheticPrices[i] ?? 0) * 1000) / 10,
+                    }
+                  })
+                  return (
+                    <div className="w-full flex flex-col items-start transition-all duration-300 ease-out">
+                      <p className="text-base text-black/60 mb-2 truncate max-w-full" title={basketData.target_question}>
+                        {basketData.target_question}
+                      </p>
+                      {basketData.r_squared != null && (
+                        <p className="text-sm text-black/40 mb-3">R² = {Number(basketData.r_squared).toFixed(4)}</p>
+                      )}
+                      <div className="w-full h-[420px] transition-all duration-300 ease-out">
+                        <ResponsiveContainer width="100%" height="100%">
+                          <LineChart data={chartData} margin={{ top: 8, right: 16, bottom: 8, left: 8 }}>
+                            <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
+                            <XAxis dataKey="date" tick={{ fontSize: 13 }} stroke="#9ca3af" />
+                            <YAxis domain={[0, 100]} tick={{ fontSize: 13 }} stroke="#9ca3af" tickFormatter={(v) => `${v}%`} />
+                            <Tooltip formatter={(v) => `${Number(v).toFixed(1)}%`} labelFormatter={(l) => l} />
+                            <Line type="monotone" dataKey="target" name="Target" stroke="#2563eb" strokeWidth={2} dot={false} />
+                            <Line type="monotone" dataKey="synthetic" name="Synthetic" stroke="#16a34a" strokeWidth={2} dot={false} />
+                          </LineChart>
+                        </ResponsiveContainer>
+                      </div>
+                    </div>
+                  )
+                })()}
+              </div>
+            </div>
+
+            {/* Right subsection: heatmap — 30% width, with resize transitions */}
+            <div className="results-subsection-resize flex-1 min-w-0 flex flex-col overflow-hidden transition-all duration-300 ease-out">
+              {!basketLoading && !basketError && basketData?.weights?.length > 0 && (() => {
+                const weights = basketData.weights
+                const totalAbs = weights.reduce((s, w) => s + Math.abs(Number(w.weight)), 0) || 1
+                const pcts = weights.map((w) => (Math.abs(Number(w.weight)) / totalAbs) * 100)
+                const maxPct = Math.max(...pcts, 1)
+                const firstThree = (title) => {
+                  const words = (title || '').trim().split(/\s+/)
+                  return words.slice(0, 3).join(' ')
+                }
+                return (
+                  <>
+                    <h2 className="text-base font-medium text-black/50 uppercase tracking-wider mb-3">
+                      Basket weights
+                    </h2>
+                    <div
+                      className="heatmap-grid-resize grid gap-0 w-full flex-1 min-h-0 transition-all duration-300 ease-out"
+                      style={{
+                        gridTemplateColumns: 'repeat(auto-fill, minmax(140px, 1fr))',
+                      }}
+                    >
+                      {weights.map((w, i) => {
+                        const intensity = maxPct > 0 ? pcts[i] / maxPct : 0
+                        const isHovered = hoveredWeightIndex === i
+                        const mild = `rgba(37, 99, 235, ${0.2 + intensity * 0.5})`
+                        const strong = `rgba(29, 78, 216, ${0.5 + intensity * 0.45})`
+                        const fill = isHovered ? strong : mild
+                        // Circle size proportional to weight: ~28% to ~70% of cell
+                        const sizePct = 28 + intensity * 42
+                        return (
+                          <div
+                            key={w.market_id || i}
+                            onMouseEnter={() => setHoveredWeightIndex(i)}
+                            onMouseLeave={() => setHoveredWeightIndex(null)}
+                            className="relative p-3 text-left cursor-default transition-all duration-300 ease-out origin-center hover:scale-[1.03] hover:z-10"
+                            style={{
+                              gridColumn: isHovered ? '1 / -1' : undefined,
+                            }}
+                          >
+                            <div
+                              className="absolute inset-0 flex items-center justify-center pointer-events-none"
+                              aria-hidden
+                            >
+                              <div
+                                className="rounded-full aspect-square transition-all duration-300 ease-out"
+                                style={{
+                                  width: `${sizePct}%`,
+                                  background: `radial-gradient(circle at 50% 50%, ${fill} 0%, ${fill} 55%, transparent 100%)`,
+                                }}
+                              />
+                            </div>
+                            <div className="relative z-10">
+                              <p className="text-base font-medium text-black/90 leading-snug">
+                                {isHovered ? w.title : firstThree(w.title)}
+                                {!isHovered && (w.title || '').trim().split(/\s+/).length > 3 && '…'}
+                              </p>
+                              <p className="text-sm font-mono text-black/60 mt-0.5">
+                                {pcts[i].toFixed(1)}%
+                              </p>
+                            </div>
+                          </div>
+                        )
+                      })}
+                    </div>
+                  </>
+                )
+              })()}
+              {(!basketData?.weights?.length || basketLoading || basketError) && (
+                <div className="flex-1 min-h-[200px] flex items-center justify-center text-black/40 text-base">
+                  Weights appear when basket is loaded
                 </div>
-              )
-            })()}
+              )}
+            </div>
           </div>
         </section>
+        </div>
       </div>
     </div>
   )
@@ -861,7 +1435,43 @@ function HomePage() {
   const [searchValue, setSearchValue] = useState('')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
+  const [newsArticles, setNewsArticles] = useState([])
+  const [newsLoading, setNewsLoading] = useState(true)
   const navigate = useNavigate()
+
+  const NYT_CACHE_KEY = 'nyt_top_stories'
+  const NYT_CACHE_TTL_MS = 15 * 60 * 1000 // 15 min
+  const NYT_SECTION = 'home'
+
+  useEffect(() => {
+    let cancelled = false
+    const cacheKey = `${NYT_CACHE_KEY}_${NYT_SECTION}`
+    try {
+      const raw = sessionStorage.getItem(cacheKey)
+      if (raw) {
+        const { data, ts } = JSON.parse(raw)
+        if (Date.now() - ts < NYT_CACHE_TTL_MS && Array.isArray(data)) {
+          setNewsArticles(data)
+          setNewsLoading(false)
+          return
+        }
+      }
+    } catch (_) {}
+    setNewsLoading(true)
+    fetch(`/api/nytimes/top-stories?section=${encodeURIComponent(NYT_SECTION)}`)
+      .then((res) => res.json())
+      .then((data) => {
+        if (!cancelled && Array.isArray(data)) {
+          setNewsArticles(data)
+          try {
+            sessionStorage.setItem(cacheKey, JSON.stringify({ data, ts: Date.now() }))
+          } catch (_) {}
+        }
+      })
+      .catch(() => { if (!cancelled) setNewsArticles([]) })
+      .finally(() => { if (!cancelled) setNewsLoading(false) })
+    return () => { cancelled = true }
+  }, [])
 
   function isPolymarketUrl(input) {
     const s = input.trim().toLowerCase()
@@ -920,32 +1530,36 @@ function HomePage() {
         </nav>
       </header>
 
-      <div className="bg-blue-700 text-white" style={{ backgroundColor: '#1d4ed8' }}>
-        <div className="flex items-center gap-4 overflow-hidden py-3">
-          <div className="flex shrink-0 items-center gap-2 px-4">
-            <span className="flex h-6 w-6 items-center justify-center bg-white/20 text-white">
-              <svg className="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6" />
-              </svg>
-            </span>
-            <span className="text-sm font-medium text-white">Trending</span>
-          </div>
-          <div className="ticker-wrap flex-1 overflow-hidden">
-            <div className="ticker flex gap-8 whitespace-nowrap">
-              {['Election market: Trump vs Harris odds shift after debate.', 'Fed rate market: June cut probability at 72%.', 'Related market: Crypto ETF approval moves correlation markets.'].map((headline, i) => (
-                <span key={i} className="text-sm text-white">{headline}</span>
-              ))}
-              {['Election market: Trump vs Harris odds shift after debate.', 'Fed rate market: June cut probability at 72%.', 'Related market: Crypto ETF approval moves correlation markets.'].map((headline, i) => (
-                <span key={`dup-${i}`} className="text-sm text-white">{headline}</span>
-              ))}
-            </div>
-          </div>
-          <button type="button" className="shrink-0 bg-white/20 px-4 py-1.5 text-sm font-medium text-white hover:bg-white/30">All news</button>
-        </div>
-      </div>
+      <CryptoMarquee />
 
       <main className="relative flex flex-col flex-1 min-w-0">
-        <section className="hero-gradient-drift flex min-h-[70vh] flex-col justify-center px-2 py-12 md:px-3">
+        <section className="hero-gradient-drift flex min-h-[70vh] flex-col justify-center px-2 py-12 md:px-3 overflow-hidden">
+          {/* Light translucent vector decoration */}
+          <div className="absolute inset-0 z-0 pointer-events-none" aria-hidden>
+            <svg className="absolute w-full h-full" viewBox="0 0 1200 600" preserveAspectRatio="xMidYMid slice" fill="none">
+              <defs>
+                <linearGradient id="hero-vec-grad" x1="0%" y1="0%" x2="100%" y2="100%">
+                  <stop offset="0%" stopColor="white" stopOpacity="0.08" />
+                  <stop offset="100%" stopColor="white" stopOpacity="0.02" />
+                </linearGradient>
+              </defs>
+              <path d="M0 200 Q300 100 600 200 T1200 200" stroke="url(#hero-vec-grad)" strokeWidth="1.5" fill="none" />
+              <path d="M0 350 Q400 250 800 350 T1200 350" stroke="white" strokeOpacity="0.06" strokeWidth="1" fill="none" />
+              <path d="M-50 450 Q200 380 500 450 T1200 450" stroke="white" strokeOpacity="0.05" strokeWidth="1" fill="none" />
+              <ellipse cx="180" cy="120" rx="140" ry="80" fill="white" fillOpacity="0.04" />
+              <ellipse cx="1000" cy="480" rx="200" ry="120" fill="white" fillOpacity="0.03" />
+              <circle cx="950" cy="100" r="80" fill="white" fillOpacity="0.035" />
+              <path d="M200 0 L200 600 M400 0 L400 600 M600 0 L600 600 M800 0 L800 600 M1000 0 L1000 600" stroke="white" strokeOpacity="0.04" strokeWidth="0.5" />
+            </svg>
+            <svg className="absolute top-0 right-0 w-[70%] h-full opacity-40" viewBox="0 0 400 600" preserveAspectRatio="xMaxYMid meet" fill="none">
+              <path d="M400 0 L400 600 L0 400 Q200 200 400 0" fill="white" fillOpacity="0.06" />
+              <path d="M350 0 L350 600 L50 450 Q150 250 350 0" fill="white" fillOpacity="0.03" />
+            </svg>
+            <svg className="absolute bottom-0 left-0 w-[50%] h-[60%] opacity-50" viewBox="0 0 300 400" preserveAspectRatio="xMinYMax meet" fill="none">
+              <path d="M0 400 Q80 200 0 0 L0 400" fill="white" fillOpacity="0.05" />
+              <circle cx="80" cy="320" r="120" fill="white" fillOpacity="0.03" />
+            </svg>
+          </div>
           <div className="relative z-10 mx-auto w-full max-w-7xl">
             <h1 className="text-4xl font-bold tracking-tight text-white md:text-5xl">Find markets</h1>
             <p className="mt-3 text-lg text-white/90">Build your own personalised prediction ETF</p>
@@ -978,57 +1592,370 @@ function HomePage() {
           </div>
         </section>
 
-        <div className="mx-auto flex w-full max-w-7xl flex-1 flex-col gap-8 px-2 py-8 md:px-3 lg:flex-row min-w-0">
-          <div className="flex min-h-[200px] min-w-0 flex-[0.35] items-center justify-center bg-white lg:min-h-0">
-            <div className="flex flex-col items-center justify-center gap-2">
-              <div className="h-12 w-12 bg-blue-700" />
-              <span className="text-xs text-black">Insight</span>
-            </div>
+        <div className="mx-auto w-full max-w-7xl flex-1 px-2 py-8 md:px-3 min-w-0">
+          <Section title="News">
+            {newsLoading ? (
+              <div className="flex items-center justify-center py-12 text-black/50">Loading news…</div>
+            ) : newsArticles.length === 0 ? (
+              <div className="py-12 text-center text-black/50">No articles. Set NYTIMES_API_KEY on the server to enable.</div>
+            ) : (
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                {newsArticles.slice(0, 4).map((article) => {
+                  const dateStr = article.published_date
+                    ? new Date(article.published_date).toLocaleDateString(undefined, { dateStyle: 'medium' })
+                    : ''
+                  const source = 'The New York Times'
+                  return (
+                    <a
+                      key={article.id}
+                      href={article.url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="group relative flex overflow-hidden border border-gray-200 bg-white shadow-sm text-left min-h-[140px] cursor-pointer"
+                    >
+                      <div className="w-[30%] shrink-0 overflow-hidden bg-gray-100">
+                        {article.image_url ? (
+                          <img src={article.image_url} alt="" className="h-full w-full object-cover min-h-full group-hover:scale-[1.03] transition-transform duration-300" />
+                        ) : (
+                          <div className="h-full min-h-[140px] flex items-center justify-center">
+                            <span className="text-gray-400 text-xs">No image</span>
+                          </div>
+                        )}
+                      </div>
+                      <div className="relative flex-1 flex min-w-0 overflow-hidden">
+                        <span className="absolute left-0 top-0 bottom-0 w-0 bg-blue-700 group-hover:w-1/2 transition-[width] duration-300 ease-out pointer-events-none" aria-hidden />
+                        <span className="absolute right-0 top-0 bottom-0 w-0 bg-blue-700 group-hover:w-1/2 transition-[width] duration-300 ease-out pointer-events-none" aria-hidden />
+                        <div className="relative flex-1 flex flex-col justify-center p-4 min-w-0 z-10">
+                          <h3 className="font-semibold text-lg text-black group-hover:text-white transition-colors duration-300 line-clamp-2">{article.title}</h3>
+                          <p className="mt-1 text-sm text-black/60 group-hover:text-white/90 transition-colors duration-300">{dateStr}</p>
+                        </div>
+                        <div className="flex shrink-0 items-center justify-center py-4 pr-3 w-10 z-10">
+                          <span
+                            className="text-xs font-medium uppercase tracking-wider text-blue-700 group-hover:text-white/90 transition-colors duration-300 whitespace-nowrap"
+                            style={{ writingMode: 'vertical-rl', textOrientation: 'mixed', transform: 'rotate(180deg)' }}
+                          >
+                            {source}
+                          </span>
+                        </div>
+                      </div>
+                    </a>
+                  )
+                })}
+              </div>
+            )}
+          </Section>
+        </div>
+      </main>
+    </div>
+  )
+}
+
+const LABEL_COLORS = {
+  Person: '#2563eb',
+  Company: '#16a34a',
+  Event: '#d97706',
+  Market: '#dc2626',
+}
+
+function GraphAnalysisPage() {
+  const navigate = useNavigate()
+  const location = useLocation()
+  const prompt = location.state?.prompt ?? null
+  const [navSearchValue, setNavSearchValue] = useState('')
+  const [layers, setLayers] = useState([])
+  const [startNodes, setStartNodes] = useState([])
+  const [keywords, setKeywords] = useState([])
+  const [currentLayer, setCurrentLayer] = useState(-1)
+  const [visibleThroughLayer, setVisibleThroughLayer] = useState(null) // null = show all; number = show layers 0..visibleThroughLayer
+  const [phase, setPhase] = useState('idle')
+  const [error, setError] = useState(null)
+  const graphRef = useRef(null)
+  const containerRef = useRef(null)
+  const [dimensions, setDimensions] = useState({ width: 800, height: 500 })
+  const revealStartTimeRef = useRef(Date.now())
+
+  function handleNavSearchSubmit(e) {
+    e.preventDefault()
+    const input = navSearchValue.trim()
+    if (!input) return
+    navigate('/search', { state: { prompt: input } })
+  }
+
+  useEffect(() => {
+    function measure() {
+      setDimensions({ width: window.innerWidth, height: window.innerHeight })
+    }
+    measure()
+    window.addEventListener('resize', measure)
+    return () => window.removeEventListener('resize', measure)
+  }, [])
+
+  useEffect(() => {
+    if (!prompt) return
+    setPhase('loading')
+    setError(null)
+    setLayers([])
+    setStartNodes([])
+    setKeywords([])
+    setCurrentLayer(-1)
+    setVisibleThroughLayer(null)
+    let cancelled = false
+    async function fetchBFS() {
+      try {
+        const res = await fetch(`/api/graph/bfs-layers?q=${encodeURIComponent(prompt)}&max_depth=4`)
+        if (cancelled) return
+        const data = await res.json()
+        if (!res.ok) {
+          setError(data?.detail ?? 'Graph query failed')
+          setPhase('error')
+          return
+        }
+        if (!data.layers?.length) {
+          setError('No graph nodes found for this query.')
+          setPhase('error')
+          return
+        }
+        setLayers(data.layers)
+        setStartNodes(data.start_nodes ?? [])
+        setKeywords(data.keywords ?? [])
+        setPhase('animating')
+        setCurrentLayer(0)
+      } catch (e) {
+        if (!cancelled) {
+          setError(e.message ?? 'Request failed')
+          setPhase('error')
+        }
+      }
+    }
+    fetchBFS()
+    return () => { cancelled = true }
+  }, [prompt])
+
+  useEffect(() => {
+    if (phase !== 'animating' || currentLayer < 0) return
+    revealStartTimeRef.current = Date.now()
+    if (currentLayer >= layers.length - 1) {
+      setPhase('complete')
+      return
+    }
+    const timer = setTimeout(() => setCurrentLayer((c) => c + 1), 1000)
+    return () => clearTimeout(timer)
+  }, [phase, currentLayer, layers.length])
+
+  useEffect(() => {
+    if (graphRef.current && currentLayer === 0) {
+      setTimeout(() => graphRef.current?.zoomToFit?.(400, 60), 200)
+    }
+  }, [currentLayer])
+
+  const graphData = useMemo(() => {
+    if (currentLayer < 0 || !layers.length) return { nodes: [], links: [] }
+    const seen = new Set()
+    const nodes = []
+    const links = []
+    const cap = visibleThroughLayer !== null ? Math.min(visibleThroughLayer, layers.length - 1) : layers.length - 1
+    const maxLayer = Math.min(currentLayer, cap)
+    for (let i = 0; i <= maxLayer; i++) {
+      const layer = layers[i]
+      for (const n of layer.nodes ?? []) {
+        const id = n.id ?? n.name
+        if (id != null && !seen.has(id)) {
+          seen.add(id)
+          nodes.push({ ...n, layer: i })
+        }
+      }
+      for (const l of layer.links ?? []) {
+        links.push({ ...l })
+      }
+    }
+    return { nodes, links }
+  }, [currentLayer, layers, visibleThroughLayer])
+
+  const nodeCanvasObject = useCallback((node, ctx, globalScale) => {
+    const layer = node.layer ?? 0
+    const isCurrentWave = layer === currentLayer && phase === 'animating'
+    const waveMs = 450
+    const elapsed = Date.now() - revealStartTimeRef.current
+    const opacity = isCurrentWave ? Math.min(1, elapsed / waveMs) : 1
+    const label = node.name || ''
+    const fontSize = Math.max(11 / globalScale, 2)
+    const primaryLabel = (node.labels ?? []).find((l) => l in LABEL_COLORS)
+    const color = LABEL_COLORS[primaryLabel] ?? '#6b7280'
+    const r = 4 + (layer === 0 ? 3 : 0)
+    ctx.save()
+    ctx.globalAlpha = opacity
+    ctx.beginPath()
+    ctx.arc(node.x, node.y, r, 0, 2 * Math.PI, false)
+    ctx.fillStyle = color
+    ctx.fill()
+    if (globalScale > 0.6) {
+      ctx.font = `${fontSize}px sans-serif`
+      ctx.textAlign = 'center'
+      ctx.textBaseline = 'top'
+      ctx.fillStyle = '#1f2937'
+      const maxLen = 24
+      const display = label.length > maxLen ? label.slice(0, maxLen - 1) + '…' : label
+      ctx.fillText(display, node.x, node.y + r + 2)
+    }
+    ctx.restore()
+  }, [currentLayer, phase])
+
+  const stepLabels = layers.map((_, i) =>
+    i === 0 ? 'Start nodes' : `Layer ${i}`
+  )
+
+  const graphBg = 'oklch(97% 0.014 254.604)'
+
+  return (
+    <div className="fixed inset-0 flex flex-col text-black" style={{ background: graphBg }}>
+      {/* Full-page force graph */}
+      <div
+        ref={containerRef}
+        className="absolute inset-0 overflow-hidden"
+        style={{ background: graphBg }}
+      >
+        {graphData.nodes.length > 0 && (
+          <ForceGraph2D
+            ref={graphRef}
+            graphData={graphData}
+            width={dimensions.width}
+            height={dimensions.height}
+            backgroundColor={graphBg}
+            nodeCanvasObject={nodeCanvasObject}
+            nodePointerAreaPaint={(node, color, ctx) => {
+              ctx.beginPath()
+              ctx.arc(node.x, node.y, 8, 0, 2 * Math.PI)
+              ctx.fillStyle = color
+              ctx.fill()
+            }}
+            linkColor={() => 'rgba(100,116,139,0.35)'}
+            linkWidth={1}
+            cooldownTicks={80}
+            d3VelocityDecay={0.3}
+            enableZoomInteraction
+            enablePanInteraction
+          />
+        )}
+      </div>
+
+      {/* Overlay card: nav, title, steps, legend */}
+      <div className="absolute top-4 left-4 z-10 w-full max-w-sm">
+        <div
+          className="border border-black/8 bg-blue-50/75 shadow-xl backdrop-blur-md p-4 space-y-3"
+          style={{ boxShadow: '0 8px 32px rgba(0,0,0,0.08), 0 0 0 1px rgba(255,255,255,0.5) inset' }}
+        >
+          <div className="flex items-center justify-between gap-2">
+            <a href="/" className="flex items-center gap-2 shrink-0 text-black/70 hover:text-black">
+              <span className="flex h-7 w-7 items-center justify-center rounded bg-black/10 font-bold text-xs">PA</span>
+              <span className="text-sm font-medium">Polymarket Arb</span>
+            </a>
+            <form className="flex-1 min-w-0" onSubmit={handleNavSearchSubmit}>
+              <div className="flex items-center rounded-lg bg-black/5 border border-black/8 px-2.5 py-1.5 focus-within:border-blue-400 focus-within:ring-1 focus-within:ring-blue-400">
+                <span className="text-black/50 mr-1.5" aria-hidden>
+                  <svg className="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+                  </svg>
+                </span>
+                <input
+                  type="search"
+                  placeholder="New search…"
+                  aria-label="New search"
+                  className="w-full bg-transparent text-sm text-black placeholder-black/40 outline-none"
+                  value={navSearchValue}
+                  onChange={(e) => setNavSearchValue(e.target.value)}
+                />
+              </div>
+            </form>
           </div>
-          <div className="flex min-w-0 flex-[0.65] flex-col">
-            <p className="mb-4 text-sm font-medium text-black">Trending now:</p>
-            <div className="grid grid-cols-2 lg:grid-cols-3 [&>*]:border-t [&>*]:border-l [&>*]:border-blue-700 [&>*:nth-child(2n)]:border-r [&>*:nth-child(n+5)]:border-b lg:[&>*:nth-child(2n)]:border-r-0 lg:[&>*:nth-child(3n)]:border-r lg:[&>*:nth-child(n+4)]:border-b">
-              {[
-                { label: 'Track Fed rates', meta: 'Macro' },
-                { label: 'Track election odds', meta: 'Politics' },
-                { label: 'Track crypto markets', meta: 'Crypto' },
-                { label: 'Related markets', meta: 'See dashboard' },
-                { label: 'Arbitrage opportunities', meta: 'See dashboard' },
-                { label: 'Causality signals', meta: 'See dashboard' },
-              ].map((item, i) => (
-                <button key={i} type="button" className="group relative flex items-center gap-4 overflow-hidden bg-white p-4 text-left">
-                  <span className="absolute inset-y-0 left-0 w-0 bg-blue-700 transition-[width] duration-500 ease-[cubic-bezier(0.4,0,0.2,1)] group-hover:w-full" aria-hidden />
-                  <span className="relative z-10 flex h-10 w-10 shrink-0 items-center justify-center bg-blue-700 text-white group-hover:bg-white group-hover:text-blue-700">
-                    <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6" />
-                    </svg>
+          {prompt && (
+            <h1 className="text-base font-medium text-black/85 truncate" title={prompt}>
+              Graph: &quot;{prompt}&quot;
+            </h1>
+          )}
+
+          {/* Keywords used to traverse the graph */}
+          {keywords.length > 0 && (
+            <div className="flex flex-wrap items-center gap-1.5">
+              <span className="text-[11px] font-medium text-black/50 uppercase tracking-wide shrink-0">Traverse keywords</span>
+              <span className="text-[11px] text-black/70">
+                {keywords.map((kw, i) => (
+                  <span key={kw}>
+                    <span className="rounded bg-black/8 px-1.5 py-0.5 font-mono">{kw}</span>
+                    {i < keywords.length - 1 && <span className="mx-0.5 text-black/40">·</span>}
                   </span>
-                  <div className="relative z-10 min-w-0">
-                    <span className="block font-medium text-black transition-colors group-hover:text-white">{item.label}</span>
-                    <span className="block text-xs text-black transition-colors group-hover:text-white/90">{item.meta}</span>
-                  </div>
-                </button>
-              ))}
+                ))}
+              </span>
             </div>
-            <div className="mt-6 grid grid-cols-3">
-              {[
-                { sym: 'TRUMP', price: '58¢', name: 'Trump wins 2024', chg: '+2.1%', up: true },
-                { sym: 'FED', price: '72¢', name: 'Rate cut Jun', chg: '-0.8%', up: false },
-                { sym: 'BTC', price: '91¢', name: 'BTC > 100k', chg: '+1.2%', up: true },
-              ].map((m) => (
-                <div key={m.sym} className={`border-l-4 p-4 ${m.up ? 'border-l-green-600' : 'border-l-red-600'}`}>
-                  <div className="flex items-center justify-between">
-                    <span className="font-mono text-sm font-medium text-black">{m.sym}</span>
-                    <span className={`text-sm font-medium ${m.up ? 'text-green-700' : 'text-red-700'}`}>{m.chg}</span>
-                  </div>
-                  <p className={`mt-1 text-lg font-semibold ${m.up ? 'text-green-700' : 'text-red-700'}`}>{m.price}</p>
-                  <p className="text-xs text-black">{m.name}</p>
+          )}
+
+          {/* Thinking steps */}
+          <div className="space-y-1.5">
+            {phase === 'loading' && (
+              <div className="flex items-center gap-2">
+                <Spinner />
+                <span className="text-xs text-black/60">Resolving query and traversing graph…</span>
+              </div>
+            )}
+            {(phase === 'animating' || phase === 'complete') && stepLabels.map((label, i) => {
+              const done = i <= currentLayer
+              const active = i === currentLayer && phase === 'animating'
+              const removed = visibleThroughLayer !== null && i > visibleThroughLayer
+              const layerData = layers[i]
+              const nodeCount = layerData?.nodes?.length ?? 0
+              const linkCount = layerData?.links?.length ?? 0
+              const handleLayerClick = () => {
+                if (removed) {
+                  setVisibleThroughLayer(i)
+                } else {
+                  setVisibleThroughLayer(i - 1)
+                }
+              }
+              return (
+                <button
+                  key={i}
+                  type="button"
+                  onClick={handleLayerClick}
+                  className="flex items-center gap-2 flex-wrap w-full text-left rounded px-1 -mx-1 py-0.5 hover:bg-black/5 transition-colors cursor-pointer"
+                  title={removed ? `Show through ${label}` : `Remove ${label} and later layers`}
+                >
+                  <div
+                    className="w-1.5 h-1.5 rounded-full shrink-0 transition-colors duration-300"
+                    style={{ backgroundColor: removed ? '#d1d5db' : done ? '#16a34a' : active ? '#2563eb' : '#d1d5db' }}
+                  />
+                  <span className={`text-xs font-medium ${removed ? 'text-black/40 line-through' : 'text-black/70'}`}>
+                    {label}
+                  </span>
+                  {active && <Spinner />}
+                  {done && !removed && (
+                    <span className="text-[11px] text-black/40 font-mono">{nodeCount}n · {linkCount}e</span>
+                  )}
+                </button>
+              )
+            })}
+            {phase === 'complete' && (
+              <div className="flex items-center gap-2">
+                <div className="w-1.5 h-1.5 rounded-full shrink-0 bg-green-600" />
+                <span className="text-xs font-medium text-green-700">Complete</span>
+              </div>
+            )}
+            {phase === 'error' && error && (
+              <p className="text-xs text-red-600">{error}</p>
+            )}
+          </div>
+
+          {/* Legend */}
+          {(phase === 'animating' || phase === 'complete') && (
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-1 pt-1 border-t border-black/8">
+              {Object.entries(LABEL_COLORS).map(([label, color]) => (
+                <div key={label} className="flex items-center gap-1">
+                  <div className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: color }} />
+                  <span className="text-[11px] text-black/50">{label}</span>
                 </div>
               ))}
             </div>
-          </div>
+          )}
         </div>
-      </main>
+      </div>
     </div>
   )
 }
@@ -1038,6 +1965,7 @@ function App() {
     <Routes>
       <Route path="/" element={<HomePage />} />
       <Route path="/search" element={<SemanticResultsPage />} />
+      <Route path="/search/graph" element={<GraphAnalysisPage />} />
       <Route path="/event/:slug" element={<EventPage />} />
     </Routes>
   )

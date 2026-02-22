@@ -87,6 +87,17 @@ html, body {
   pointer-events: none;
 }
 
+/* Results section and subsections: smooth resize when layout changes */
+.results-section-resize {
+  transition: min-height 0.3s ease-out, opacity 0.3s ease-out;
+}
+.results-subsection-resize {
+  transition: flex 0.3s ease-out, min-width 0.3s ease-out;
+}
+.heatmap-grid-resize {
+  transition: grid-template-columns 0.3s ease-out;
+}
+
 /* Remove default search clear (X) button */
 .search-input::-webkit-search-cancel-button {
   appearance: none;
