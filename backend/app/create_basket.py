@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 def get_clob_token_ids(market_id):
     """
     Fetch CLOB token IDs from a Polymarket market ID.
-    Returns (yes_token_id, no_token_id, market_question)
+    Returns (yes_token_id, no_token_id, market_question, market_description)
     """
     url = f"https://gamma-api.polymarket.com/markets/{market_id}"
     response = requests.get(url)
@@ -35,7 +35,7 @@ def get_clob_token_ids(market_id):
     if len(clob_ids) < 2:
         raise ValueError(f"Market {market_id} doesn't have CLOB token IDs")
     
-    return clob_ids[0], clob_ids[1], data.get('question', 'Unknown')
+    return clob_ids[0], clob_ids[1], data.get('question', 'Unknown'), data.get('description', '')
 
 
 def fetch_historical_prices(clob_token_id, start_ts, end_ts):
@@ -97,18 +97,21 @@ def build_synthetic_basket(target_market_id, input_market_ids, days=7, verbose=F
 
     # 1. Fetch target market metadata
     logger.info(f"[1/5] 🎯 Fetching target market metadata...")
-    target_clob, _, target_question = get_clob_token_ids(target_market_id)
+    target_clob, _, target_question, target_description = get_clob_token_ids(target_market_id)
     logger.info(f"Target: {target_question}")
     
     # 2. Fetch input market metadata and optionally filter by semantic similarity
     logger.info(f"[2/5] 📥 Fetching input market metadata...")
     
-    # First, fetch all candidate market questions
+    # First, fetch all candidate market questions and descriptions
     candidate_dict = {}
     for market_id in input_market_ids:
         try:
-            _, _, question = get_clob_token_ids(market_id)
-            candidate_dict[market_id] = question
+            _, _, question, description = get_clob_token_ids(market_id)
+            candidate_dict[market_id] = {
+                'question': question,
+                'description': description
+            }
         except Exception as e:
             logger.warning(f"Failed to fetch market {market_id}: {e}")
     
@@ -121,7 +124,8 @@ def build_synthetic_basket(target_market_id, input_market_ids, days=7, verbose=F
             candidate_dict, 
             top_k=top_k_semantic,
             min_similarity=min_similarity,
-            verbose=verbose
+            verbose=verbose,
+            target_description=target_description
         )
     else:
         filtered_market_ids = list(candidate_dict.keys())
@@ -130,7 +134,7 @@ def build_synthetic_basket(target_market_id, input_market_ids, days=7, verbose=F
     # Fetch CLOB token IDs for filtered markets
     input_info = []
     for market_id in filtered_market_ids:
-        clob_id, _, question = get_clob_token_ids(market_id)
+        clob_id, _, question, description = get_clob_token_ids(market_id)
         input_info.append({'market_id': market_id, 'clob_id': clob_id, 'question': question})
 
     # 3. Fetch historical prices

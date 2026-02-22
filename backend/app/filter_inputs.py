@@ -27,27 +27,45 @@ def get_semantic_model():
 
 def filter_by_semantic_similarity(target_question, candidate_dict, top_k=10, 
                                   min_similarity=0.4, max_pairwise_similarity=0.85, 
-                                  verbose=False):
+                                  verbose=False, target_description=""):
     """
     Filter candidate markets by semantic similarity to target question, 
     while forcing diversity by excluding highly redundant markets.
     
     Args:
         target_question: The target market question
-        candidate_dict: {market_id: "Market Question Text"}
+        candidate_dict: {market_id: {"question": "...", "description": "..."}} or {market_id: "question_text"}
         top_k: Number of top matches to return (default: 10)
         min_similarity: Minimum similarity to the target (default: 0.4)
         max_pairwise_similarity: Maximum allowed similarity between selected inputs (default: 0.85)
+        verbose: Whether to print detailed logs (default: False)
+        target_description: Optional target market description for deeper similarity (default: "")
     """
-    logger.info(f"🔍 Filtering {len(candidate_dict)} candidates to top {top_k}...")
+    logger.info(f"🔍 Filtering {len(candidate_dict)} candidates to top {top_k} (using Title + Description)...")
     model = get_semantic_model()
     
-    candidates = list(candidate_dict.values())
     market_ids = list(candidate_dict.keys())
     
-    # 1. Generate embeddings
-    target_embedding = model.encode(target_question, convert_to_tensor=True)
-    candidate_embeddings = model.encode(candidates, convert_to_tensor=True)
+    # Handle both old format (string) and new format (dict with question/description)
+    candidate_texts = []
+    candidate_questions = []
+    for market_id in market_ids:
+        value = candidate_dict[market_id]
+        if isinstance(value, dict):
+            # New format with description
+            question = value.get('question', '')
+            description = value.get('description', '')
+            candidate_texts.append(f"Title: {question}\nResolution Rules: {description}")
+            candidate_questions.append(question)
+        else:
+            # Old format (backward compatibility)
+            candidate_texts.append(f"Title: {value}")
+            candidate_questions.append(value)
+    
+    # 1. Generate embeddings using full text (Title + Description)
+    target_text = f"Title: {target_question}\nResolution Rules: {target_description}"
+    target_embedding = model.encode(target_text, convert_to_tensor=True)
+    candidate_embeddings = model.encode(candidate_texts, convert_to_tensor=True)
     
     # 2. Calculate cosine similarity to the TARGET
     cosine_scores = util.cos_sim(target_embedding, candidate_embeddings)[0]
@@ -81,7 +99,7 @@ def filter_by_semantic_similarity(target_question, candidate_dict, top_k=10,
             # If it's too similar to something we already have, skip it
             if max_redundancy > max_pairwise_similarity:
                 if verbose:
-                    logger.info(f"  ❌ Skipping: [{score:.4f}] {candidates[idx][:50]}... "
+                    logger.info(f"  ❌ Skipping: [{score:.4f}] {candidate_questions[idx][:50]}... "
                                 f"(Redundancy: {max_redundancy:.4f})")
                 continue
                 
@@ -94,6 +112,6 @@ def filter_by_semantic_similarity(target_question, candidate_dict, top_k=10,
 
     logger.info(f"✅ Selected {len(selected_indices)} diverse markets:")
     for score, idx in zip(selected_scores, selected_indices):
-        logger.info(f"  [{score:.4f}] {candidates[idx]}")
+        logger.info(f"  [{score:.4f}] {candidate_questions[idx]}")
     
     return [market_ids[i] for i in selected_indices]
